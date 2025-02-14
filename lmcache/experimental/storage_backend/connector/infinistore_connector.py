@@ -1,0 +1,118 @@
+import asyncio
+import inspect
+import os
+from typing import List, Optional, Tuple, Union, no_type_check
+import ctypes
+
+import infinistore
+
+from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
+                                                    MemoryObj)
+
+# reuse 
+from lmcache.experimental.protocol import RedisMetadata
+from lmcache.experimental.storage_backend.connector.base_connector import \
+    RemoteConnector
+from lmcache.logging import init_logger
+from lmcache.utils import CacheEngineKey
+
+logger = init_logger(__name__)
+
+
+
+def _get_ptr(mv: Union[bytearray, memoryview]) -> int:
+    return ctypes.addressof(ctypes.c_char.from_buffer(mv))
+
+class InfinistoreConnector(RemoteConnector):
+    def __init__(self, host: str, port: int, dev_name, loop: asyncio.AbstractEventLoop,
+                 memory_allocator: MemoryAllocatorInterface):
+        config = infinistore.ClientConfig(
+            host_addr=host,
+            service_port=port,
+            log_level="info",
+            connection_type=infinistore.TYPE_RDMA,
+            ib_port=1,
+            link_type=infinistore.LINK_ETHERNET,
+            dev_name=dev_name,
+        )
+
+        self.rdma_conn = infinistore.InfinityConnection(config)
+
+
+        self.memory_allocator = memory_allocator
+        self.loop = loop
+        self.rdma_conn.connect()
+        # allocate 4KB buffer for RDMA read
+        self.buffer_size = 4<<10
+        self.buffer = bytearray(self.buffer_size)
+        self.buffer_ptr = _get_ptr(self.buffer)
+
+    async def exists(self, key: CacheEngineKey) -> bool:
+        def blocking_io():
+            return self.rdma_conn.exists(key.to_string() + "metadata")
+        return await self.loop.run_in_executor(None, blocking_io)
+
+    async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
+        key_str = key.to_string()
+    
+        await self.rdma_conn.read_cache_single_async(key, _get_ptr(self.buffer), len(self.buffer))
+
+
+        metadata = RedisMetadata.deserialize(self.buffer)
+
+        memory_obj = self.memory_allocator.allocate(
+            metadata.shape,
+            metadata.dtype,
+            metadata.fmt,
+        )
+        if memory_obj is None:
+            logger.warning("Failed to allocate memory during remote receive")
+            return None
+
+        # TODO: we could have memory allocator which pre-allocate and register RDMA memory.
+        # register memory is a heavy operation, so we should avoid it.
+
+        ptr = _get_ptr(memory_obj.byte_array)
+        size = memory_obj.byte_array.nbytes
+        await self.loop.run_in_executor(None, self.rdma_conn.register_memory, ptr, size)
+
+        await self.rdma_conn.read_cache_single_async(key_str+ "kv_bytes", ptr, size)
+
+        return memory_obj
+
+    async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
+        # TODO(Jiayi): The following code is ugly.
+        # Please use a function like `memory_obj.to_meta()`.
+        kv_bytes = memory_obj.byte_array
+        kv_shape = memory_obj.get_shape()
+        kv_dtype = memory_obj.get_dtype()
+        memory_format = memory_obj.get_memory_format()
+
+        metadata_bytes = RedisMetadata(len(kv_bytes), kv_shape, kv_dtype,
+                                             memory_format).serialize()
+        
+        # not likely to happen
+        assert len(metadata_bytes) <= self.buffer_size, "metadata size exceeds buffer size"
+
+        # copy metadata to self.buffer
+        self.buffer[:len(metadata_bytes)] = metadata_bytes
+
+        await self.rdma_conn.write_cache_single_async(key.to_string() + "metadata", _get_ptr(self.buffer), len(self.buffer))
+
+        
+        ptr = _get_ptr(memory_obj.byte_array)
+        size = memory_obj.byte_array.nbytes
+        await self.loop.run_in_executor(None, self.rdma_conn.register_memory, ptr, size)
+        await self.rdma_conn.write_cache_single_async(key.to_string() + "kv_bytes", ptr, size)
+
+
+        self.memory_allocator.ref_count_down(memory_obj)
+
+    # TODO
+    @no_type_check
+    async def list(self) -> List[str]:
+        pass
+
+    async def close(self):
+        self.rdma_conn.close()
+        logger.info("Closed the infinistore connection")
