@@ -42,10 +42,6 @@ class InfinistoreConnector(RemoteConnector):
         self.memory_allocator = memory_allocator
         self.loop = loop
         self.rdma_conn.connect()
-        # # allocate 4KB buffer for RDMA read
-        # self.buffer_size = 4<<10
-        # self.buffer = bytearray(self.buffer_size)
-        # self.buffer_ptr = _get_ptr(self.buffer)
 
         # allocate 4KB buffer for RDMA read
         self.buffer_size = 4<<10
@@ -59,7 +55,6 @@ class InfinistoreConnector(RemoteConnector):
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
-        logger.info(f"get: {key_str}")
     
         try:    
             await self.rdma_conn.read_cache_single_async(key_str + "metadata", _get_ptr(self.buffer), len(self.buffer))
