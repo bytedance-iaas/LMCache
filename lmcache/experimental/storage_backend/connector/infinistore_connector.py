@@ -42,21 +42,29 @@ class InfinistoreConnector(RemoteConnector):
         self.memory_allocator = memory_allocator
         self.loop = loop
         self.rdma_conn.connect()
+        # # allocate 4KB buffer for RDMA read
+        # self.buffer_size = 4<<10
+        # self.buffer = bytearray(self.buffer_size)
+        # self.buffer_ptr = _get_ptr(self.buffer)
+
         # allocate 4KB buffer for RDMA read
         self.buffer_size = 4<<10
         self.buffer = bytearray(self.buffer_size)
-        self.buffer_ptr = _get_ptr(self.buffer)
+        self.rdma_conn.register_mr(_get_ptr(self.buffer), self.buffer_size)          
 
     async def exists(self, key: CacheEngineKey) -> bool:
         def blocking_io():
-            return self.rdma_conn.exists(key.to_string() + "metadata")
+            return self.rdma_conn.check_exist(key.to_string() + "metadata")
         return await self.loop.run_in_executor(None, blocking_io)
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
+        logger.info(f"get: {key_str}")
     
-        await self.rdma_conn.read_cache_single_async(key, _get_ptr(self.buffer), len(self.buffer))
-
+        try:    
+            await self.rdma_conn.read_cache_single_async(key_str + "metadata", _get_ptr(self.buffer), len(self.buffer))
+        except infinistore.lib.InfiniStoreKeyNotFound:
+            return None
 
         metadata = RedisMetadata.deserialize(self.buffer)
 
@@ -74,7 +82,7 @@ class InfinistoreConnector(RemoteConnector):
 
         ptr = _get_ptr(memory_obj.byte_array)
         size = memory_obj.byte_array.nbytes
-        await self.loop.run_in_executor(None, self.rdma_conn.register_memory, ptr, size)
+        await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr, size)
 
         await self.rdma_conn.read_cache_single_async(key_str+ "kv_bytes", ptr, size)
 
@@ -97,13 +105,13 @@ class InfinistoreConnector(RemoteConnector):
         # copy metadata to self.buffer
         self.buffer[:len(metadata_bytes)] = metadata_bytes
 
-        await self.rdma_conn.write_cache_single_async(key.to_string() + "metadata", _get_ptr(self.buffer), len(self.buffer))
+        await self.rdma_conn.rdma_write_cache_single_async(key.to_string() + "metadata", _get_ptr(self.buffer), len(self.buffer))
 
         
         ptr = _get_ptr(memory_obj.byte_array)
         size = memory_obj.byte_array.nbytes
-        await self.loop.run_in_executor(None, self.rdma_conn.register_memory, ptr, size)
-        await self.rdma_conn.write_cache_single_async(key.to_string() + "kv_bytes", ptr, size)
+        await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr, size)
+        await self.rdma_conn.rdma_write_cache_single_async(key.to_string() + "kv_bytes", ptr, size)
 
 
         self.memory_allocator.ref_count_down(memory_obj)
