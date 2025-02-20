@@ -18,7 +18,7 @@ from lmcache.utils import CacheEngineKey
 
 logger = init_logger(__name__)
 
-
+METADATA_BYTES_LEN = 28
 
 def _get_ptr(mv: Union[bytearray, memoryview]) -> int:
     return ctypes.addressof(ctypes.c_char.from_buffer(mv))
@@ -46,7 +46,7 @@ class InfinistoreConnector(RemoteConnector):
         # allocate 4KB buffer for RDMA read
         self.buffer_size = 4<<10
         self.buffer = bytearray(self.buffer_size)
-        self.rdma_conn.register_mr(_get_ptr(self.buffer), self.buffer_size)          
+        self.rdma_conn.register_mr(_get_ptr(self.buffer), self.buffer_size)
 
     async def exists(self, key: CacheEngineKey) -> bool:
         def blocking_io():
@@ -61,7 +61,7 @@ class InfinistoreConnector(RemoteConnector):
         except infinistore.lib.InfiniStoreKeyNotFound:
             return None
 
-        metadata = RedisMetadata.deserialize(self.buffer)
+        metadata = RedisMetadata.deserialize(self.buffer[:METADATA_BYTES_LEN])
 
         memory_obj = self.memory_allocator.allocate(
             metadata.shape,
@@ -74,12 +74,18 @@ class InfinistoreConnector(RemoteConnector):
 
         # TODO: we could have memory allocator which pre-allocate and register RDMA memory.
         # register memory is a heavy operation, so we should avoid it.
+        
+        kv_bytes = bytes(memory_obj.get_size())
+        pointer = ctypes.cast(kv_bytes, ctypes.POINTER(ctypes.c_char))
+        ptr = ctypes.addressof(pointer.contents)
+        size = memory_obj.get_size()
 
-        ptr = _get_ptr(memory_obj.byte_array)
-        size = memory_obj.byte_array.nbytes
         await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr, size)
 
         await self.rdma_conn.read_cache_single_async(key_str+ "kv_bytes", ptr, size)
+
+        view = memoryview(memory_obj.byte_array)
+        view[:metadata.length] = kv_bytes
 
         return memory_obj
 
@@ -93,7 +99,7 @@ class InfinistoreConnector(RemoteConnector):
 
         metadata_bytes = RedisMetadata(len(kv_bytes), kv_shape, kv_dtype,
                                              memory_format).serialize()
-        
+
         # not likely to happen
         assert len(metadata_bytes) <= self.buffer_size, "metadata size exceeds buffer size"
 
@@ -102,12 +108,11 @@ class InfinistoreConnector(RemoteConnector):
 
         await self.rdma_conn.rdma_write_cache_single_async(key.to_string() + "metadata", _get_ptr(self.buffer), len(self.buffer))
 
-        
-        ptr = _get_ptr(memory_obj.byte_array)
-        size = memory_obj.byte_array.nbytes
+        pointer = ctypes.cast(memory_obj.byte_array, ctypes.POINTER(ctypes.c_char))
+        ptr = ctypes.addressof(pointer.contents)
+        size = memory_obj.get_size()
         await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr, size)
         await self.rdma_conn.rdma_write_cache_single_async(key.to_string() + "kv_bytes", ptr, size)
-
 
         self.memory_allocator.ref_count_down(memory_obj)
 
