@@ -6,11 +6,12 @@ from typing import List, Optional
 from lmcache.experimental.memory_management import MemoryAllocatorInterface
 from lmcache.experimental.storage_backend.connector.base_connector import \
     RemoteConnector
+from lmcache.experimental.storage_backend.connector.infinistore_connector import \
+    InfinistoreConnector
 from lmcache.experimental.storage_backend.connector.lm_connector import \
     LMCServerConnector
 from lmcache.experimental.storage_backend.connector.redis_connector import (
     RedisConnector, RedisSentinelConnector)
-from lmcache.experimental.storage_backend.connector.infinistore_connector import InfinistoreConnector
 from lmcache.logging import init_logger
 
 logger = init_logger(__name__)
@@ -104,8 +105,9 @@ def CreateConnector(
                     f"LM connector only supports a single host, but got url:"
                     f" {url}")
         case "infinistore":
-            host, port = parsed_url.hosts[0], parsed_url.ports[0]                
-            connector = InfinistoreConnector(host, port, "mlx5_0", loop, memory_allocator)
+            host, port = parsed_url.hosts[0], parsed_url.ports[0]
+            connector = InfinistoreConnector(host, port, "mlx5_0", loop,
+                                             memory_allocator)
         case _:
             raise ValueError(
                 f"Unknown connector type {parsed_url.connector_type} "
