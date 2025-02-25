@@ -577,7 +577,7 @@ def lmcache_retrieve_kv(
     model_input: "ModelInputForGPUWithSamplingMetadata",
     cache_config: CacheConfig,
     kv_caches: List[torch.Tensor],
-    retrieve_status: RetrieveStatus,
+    retrieve_status: List[RetrieveStatus],
 ) -> Tuple["ModelInputForGPUWithSamplingMetadata", bool]:
     """Retrieve the KV caches from LMCache for the current model_input. And 
     rebuild the model_input to reflect the changes in KV if necessary.
@@ -715,8 +715,6 @@ def lmcache_retrieve_kv(
                     0
                 )
 
-            print("1~~~~~~~~~~~~ ", hidden_states)
-
             assert isinstance(lmc_num_computed_tokens, int)
 
             # total number of computed tokens (vllm + lmc)
@@ -752,9 +750,10 @@ def lmcache_retrieve_kv(
     assert len(lmc_num_computed_tokens_list) == seq_cnt
     assert len(num_computed_tokens_list) == seq_cnt
 
-    if retrieve_status == RetrieveStatus.CHUNK_PREFILL and \
+    if hidden_states is not None and \
+        retrieve_status[0] == RetrieveStatus.PREFILL and \
         num_request_not_found == 0:
-        return model_input, None, True
+        return model_input, hidden_states, True
 
     # Some of the request can be skipped for a bit
     # TODO(Jiayi): need e2e test full prefill and partial prefill

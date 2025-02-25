@@ -227,7 +227,7 @@ class LMCacheEngine:
         hidden_states = self.retrieve_hidden_states(tokens)
         if hidden_states is not None:
             device = kwargs["kvcaches"][0].device
-            hidden_states.to(device)
+            hidden_states = hidden_states.to(device)
         return ret_mask, hidden_states
 
     def prefetch(

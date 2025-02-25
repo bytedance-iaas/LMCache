@@ -91,6 +91,7 @@ class LMCacheConnector(KVConnectorBase):
             model_input,
             kv_caches,
             store_status,
+            hidden_or_intermediate_states,
         )
 
     def close(self):
