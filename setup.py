@@ -37,6 +37,7 @@ setup(
         "torchac_cuda >= 0.2.5",
         "sortedcontainers",
         "prometheus_client",
+        "infinistore"
     ],
     ext_modules=ext_modules,
     cmdclass=cmdclass,
