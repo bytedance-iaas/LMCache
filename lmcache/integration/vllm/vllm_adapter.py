@@ -644,7 +644,7 @@ def lmcache_retrieve_kv(
     seq_group_list = model_input.sampling_metadata.seq_groups
     assert seq_group_list is not None
 
-    hidden_states = None
+    hidden_states_list = []
 
     for seq_group in seq_group_list:
         seq_ids = seq_group.seq_ids
@@ -704,11 +704,12 @@ def lmcache_retrieve_kv(
                 slot_mapping_req_full = slot_mapping[start_pos:end_pos]
 
             # call lmcache retrieve
-            ret_token_mask, hidden_states = engine.retrieve(
+            ret_token_mask, seq_hidden_states = engine.retrieve(
                 full_token_tensor,
                 token_mask,
                 kvcaches=kv_caches,
                 slot_mapping=slot_mapping_req_full)
+
             lmc_num_computed_tokens = max(
                     torch.sum(ret_token_mask).item() - \
                     (vllm_num_computed_tokens - vllm_num_computed_tokens_align),
@@ -737,8 +738,10 @@ def lmcache_retrieve_kv(
             lmc_num_computed_tokens_list.append(lmc_num_computed_tokens)
 
             # No cache found, move on
-            if lmc_num_computed_tokens == 0:
+            if lmc_num_computed_tokens == 0 or seq_hidden_states is None:
                 num_request_not_found += 1
+
+            hidden_states_list.append(seq_hidden_states)
 
             # Inject the lmc retrieved kv cache
             logger.debug(f"Injected token number: {lmc_num_computed_tokens}")
@@ -750,9 +753,10 @@ def lmcache_retrieve_kv(
     assert len(lmc_num_computed_tokens_list) == seq_cnt
     assert len(num_computed_tokens_list) == seq_cnt
 
-    if hidden_states is not None and \
-        retrieve_status[0] == RetrieveStatus.PREFILL and \
+    if retrieve_status[0] == RetrieveStatus.PREFILL and \
         num_request_not_found == 0:
+        device = kv_caches[0].device
+        hidden_states = torch.cat(hidden_states_list, dim=0).to(device)
         return model_input, hidden_states, True
 
     # Some of the request can be skipped for a bit
@@ -771,10 +775,10 @@ def lmcache_retrieve_kv(
             cache_config,
         )
         logger.debug("Rebuilt the input!")
-        return rebuilt_model_input, hidden_states, False
+        return rebuilt_model_input, None, False
 
     logger.debug("Returning the original input!")
-    return model_input, hidden_states, False
+    return model_input, None, False
 
 
 def build_partial_prefill_input(
