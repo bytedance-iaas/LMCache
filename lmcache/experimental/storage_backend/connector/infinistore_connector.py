@@ -88,8 +88,11 @@ class InfinistoreConnector(RemoteConnector):
         await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
                                         size)
 
-        await self.rdma_conn.read_cache_single_async(key_str + "kv_bytes", ptr,
+        try:
+            await self.rdma_conn.read_cache_single_async(key_str + "kv_bytes", ptr,
                                                      size)
+        except infinistore.lib.InfiniStoreKeyNotFound:
+            return None
 
         view = memoryview(memory_obj.byte_array)
         view[:metadata.length] = kv_bytes
