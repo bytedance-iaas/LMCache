@@ -89,8 +89,8 @@ class InfinistoreConnector(RemoteConnector):
                                         size)
 
         try:
-            await self.rdma_conn.read_cache_single_async(key_str + "kv_bytes", ptr,
-                                                     size)
+            await self.rdma_conn.read_cache_single_async(
+                key_str + "kv_bytes", ptr, size)
         except infinistore.lib.InfiniStoreKeyNotFound:
             return None
 
