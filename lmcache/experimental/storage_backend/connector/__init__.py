@@ -6,13 +6,13 @@ from typing import List, Optional
 from lmcache.experimental.memory_management import MemoryAllocatorInterface
 from lmcache.experimental.storage_backend.connector.base_connector import \
     RemoteConnector
-from lmcache.experimental.storage_backend.connector.infinistore_connector import \
-    InfinistoreConnector
 from lmcache.experimental.storage_backend.connector.lm_connector import \
     LMCServerConnector
 from lmcache.experimental.storage_backend.connector.redis_connector import (
     RedisConnector, RedisSentinelConnector)
 from lmcache.logging import init_logger
+
+from .infinistore_connector import InfinistoreConnector
 
 logger = init_logger(__name__)
 
