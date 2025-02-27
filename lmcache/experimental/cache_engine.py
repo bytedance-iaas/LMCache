@@ -86,6 +86,19 @@ class LMCacheEngine:
         :raises: ValueError if the number of Falses in the mask is not a 
             multiple of the chunk size.
         """
+        self.store_kv(tokens, mask, **kwargs)
+        if "hidden_states" in kwargs:
+            if self.config.remote_serde != "naive":
+                logger.warning("Hidden states storage only supports in naive serde mode.")
+                return
+
+            self.store_hidden_states(tokens, kwargs["hidden_states"])
+
+    def store_kv(self,
+              tokens: torch.Tensor,
+              mask: Optional[torch.Tensor] = None,
+              **kwargs) -> None:
+
         if mask is not None:
             monitor_req_id = self.stats_monitor.on_store_request(
                 torch.sum(mask))
@@ -115,12 +128,51 @@ class LMCacheEngine:
             self.storage_manager.put(key, memory_obj)
         self.stats_monitor.on_store_finished(monitor_req_id)
 
+    def store_hidden_states(self,
+              tokens: torch.Tensor,
+              hidden_states: torch.Tensor) -> None:
+
+        hidden_states_key = self.token_database.make_hidden_states_key(tokens)
+
+        # the LMCache backend assumes a tensor with 4 dimensions
+        assert len(hidden_states.shape) == 2
+        hidden_states = hidden_states.unsqueeze(0).unsqueeze(0) 
+
+        memory_obj = self.storage_manager.allocate(hidden_states.shape, hidden_states.dtype)
+        if memory_obj is None:
+            logger.warning("Failed to allocate memory for the hidden states.")
+            return
+
+        memory_obj.tensor.copy_(hidden_states, non_blocking=True)
+        self.storage_manager.put(hidden_states_key, memory_obj)
+
+    def retrieve_hidden_states(self,
+              tokens: torch.Tensor
+             ) -> torch.Tensor:
+
+        if self.config.remote_serde != "naive":
+            logger.warning("Hidden states retrieval is supported in serde mode only.")
+            return None
+
+        hidden_states_key = self.token_database.make_hidden_states_key(tokens)
+        memory_obj = self.storage_manager.get(hidden_states_key)
+        if memory_obj is None:
+            logger.error("Failed to retrieve the hidden states.")
+            return None
+        
+        # the LMCache backend demands a tensor with 4 dimensions
+        # change it back
+        assert len(memory_obj.tensor.shape) == 4
+        hidden_states = memory_obj.tensor.squeeze(0).squeeze(0) 
+
+        return hidden_states
+
     @_lmcache_nvtx_annotate
     @torch.inference_mode()
     def retrieve(self,
                  tokens: torch.Tensor,
                  mask: Optional[torch.Tensor] = None,
-                 **kwargs) -> torch.Tensor:
+                 **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         """Retrieve the KV caches from the cache engine. And put the retrieved
         KV cache to the serving engine via the GPU connector.
 
@@ -171,7 +223,9 @@ class LMCacheEngine:
 
         self.stats_monitor.on_retrieve_finished(monitor_req_id,
                                                 torch.sum(ret_mask))
-        return ret_mask
+        
+        hidden_states = self.retrieve_hidden_states(tokens)
+        return ret_mask, hidden_states
 
     def prefetch(
         self,

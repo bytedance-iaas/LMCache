@@ -54,6 +54,14 @@ class ChunkedTokenDatabase(TokenDatabase):
         return CacheEngineKey(self.metadata.fmt, self.metadata.model_name,
                               self.metadata.world_size,
                               self.metadata.worker_id, chunk_hash)
+    
+    def make_hidden_states_key(self, input_tokens: torch.Tensor) -> CacheEngineKey:
+        key_string = self._hash(input_tokens, "hidden_states")
+
+        return CacheEngineKey(self.metadata.fmt, self.metadata.model_name,
+                              self.metadata.world_size,
+                              self.metadata.worker_id, key_string)
+        
 
     def _get_init_hash(self) -> str:
         return ""
