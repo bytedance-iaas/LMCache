@@ -42,6 +42,20 @@ class TokenDatabase(metaclass=abc.ABCMeta):
 
         raise NotImplementedError
 
+    @abc.abstractmethod
+    def make_hidden_states_key(self,
+                               input_tokens: torch.Tensor) -> CacheEngineKey:
+        """Generate a unique cache engine key for the hidden states of the
+        given input tokens.
+
+        :param torch.Tensor input_tokens: The tokens to process, a 1-D tensor.
+
+        :returns: A `CacheEngineKey` that uniquely identifies the hidden states 
+            tensor corresponding to the given input tokens. 
+        """
+
+        raise NotImplementedError
+
 
 class ChunkedTokenDatabase(TokenDatabase):
 
@@ -54,14 +68,14 @@ class ChunkedTokenDatabase(TokenDatabase):
         return CacheEngineKey(self.metadata.fmt, self.metadata.model_name,
                               self.metadata.world_size,
                               self.metadata.worker_id, chunk_hash)
-    
-    def make_hidden_states_key(self, input_tokens: torch.Tensor) -> CacheEngineKey:
+
+    def make_hidden_states_key(self,
+                               input_tokens: torch.Tensor) -> CacheEngineKey:
         key_string = self._hash(input_tokens, "hidden_states")
 
         return CacheEngineKey(self.metadata.fmt, self.metadata.model_name,
                               self.metadata.world_size,
                               self.metadata.worker_id, key_string)
-        
 
     def _get_init_hash(self) -> str:
         return ""

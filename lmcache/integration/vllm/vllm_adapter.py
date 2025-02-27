@@ -562,7 +562,7 @@ def lmcache_store_kv(
                              kv_tensors_mask,
                              kvcaches=kv_caches,
                              slot_mapping=slot_mapping_req_full,
-                             offset=skipped_token_num, 
+                             offset=skipped_token_num,
                              hidden_states=hidden_states)
             else:
                 stored_token_num = 0
@@ -571,6 +571,7 @@ def lmcache_store_kv(
                     f"and then stores {stored_token_num} tokens")
             seq_data_idx += 1
 
+
 @_lmcache_nvtx_annotate
 def lmcache_retrieve_kv(
     model_executable: torch.nn.Module,
@@ -578,7 +579,8 @@ def lmcache_retrieve_kv(
     cache_config: CacheConfig,
     kv_caches: List[torch.Tensor],
     retrieve_status: List[RetrieveStatus],
-) -> Tuple["ModelInputForGPUWithSamplingMetadata", bool]:
+) -> Tuple["ModelInputForGPUWithSamplingMetadata", Optional[torch.Tensor],
+           bool]:
     """Retrieve the KV caches from LMCache for the current model_input. And 
     rebuild the model_input to reflect the changes in KV if necessary.
 
@@ -603,7 +605,7 @@ def lmcache_retrieve_kv(
     assert engine is not None, "LMCache engine is not initialized."
 
     if engine.config.enable_blending:
-        return model_input, False
+        return model_input, None, False
 
     assert isinstance(model_input.attn_metadata, FlashAttentionMetadata), \
         "Only FlashAttention backend is supported for now."
@@ -655,7 +657,6 @@ def lmcache_retrieve_kv(
                 total_seq_len = seq_lens[idx]
             else:
                 total_seq_len = seq_data.get_len()
-
 
             full_token_tensor = torch.tensor(
                 seq_data.get_token_ids()[:total_seq_len], device="cpu")
