@@ -107,6 +107,10 @@ class LMCacheEngine:
         """
         self.store_kv(tokens, mask, **kwargs)
         if "hidden_states" in kwargs:
+            hidden_states = kwargs["hidden_states"]
+            if hidden_states is None:
+                return
+
             if self.config.remote_serde != "naive":
                 logger.warning(
                     "Hidden states storage only supports in naive serde mode.")
@@ -168,7 +172,7 @@ class LMCacheEngine:
             logger.warning("Failed to allocate memory for the hidden states.")
             return
 
-        memory_obj.tensor.copy_(hidden_states, non_blocking=True)
+        memory_obj.tensor.copy_(hidden_states)
         self.storage_manager.put(hidden_states_key, memory_obj)
 
     def retrieve_hidden_states(self,

@@ -423,7 +423,7 @@ def lmcache_store_kv(
     model_input: "ModelInputForGPUWithSamplingMetadata",
     kv_caches: List[torch.Tensor],
     store_status: List[StoreStatus],
-    hidden_states: torch.Tensor,
+    hidden_states: Optional[torch.Tensor] = None,
 ) -> None:
     """Store the KV caches into LMCache for the current model_input.
 
