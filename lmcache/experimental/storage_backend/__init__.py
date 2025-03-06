@@ -8,10 +8,9 @@ from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.config import LMCacheEngineConfig
 from lmcache.experimental.lookup_server import LookupServerInterface
 from lmcache.experimental.memory_management import MemoryAllocatorInterface
-from lmcache.experimental.storage_backend.abstract_backend import \
-    StorageBackendInterface
-from lmcache.experimental.storage_backend.local_disk_backend import \
-    LocalDiskBackend
+from lmcache.experimental.storage_backend.abstract_backend import (
+    StorageBackendInterface, )
+from lmcache.experimental.storage_backend.local_disk_backend import LocalDiskBackend
 from lmcache.experimental.storage_backend.remote_backend import RemoteBackend
 from lmcache.logging import init_logger
 
@@ -31,8 +30,7 @@ def CreateStorageBackends(
     if dst_device == "cuda":
         dst_device = f"cuda:{torch.cuda.current_device()}"
 
-    storage_backends: OrderedDict[str, StorageBackendInterface] =\
-        OrderedDict()
+    storage_backends: OrderedDict[str, StorageBackendInterface] = OrderedDict()
 
     # TODO(Jiayi): The hierarchy is fixed for now
     if config.local_disk and config.max_local_disk_size > 0:
@@ -48,9 +46,36 @@ def CreateStorageBackends(
         backend_name = str(remote_backend)
         storage_backends[backend_name] = remote_backend
 
+    if config.custom_backend is not None:
+        import importlib
+        from lmcache.experimental.storage_backend.abstract_backend import (
+            StorageBackendInterface, )
+        backend = config.custom_backend
+        tokens = backend.split(".")
+        if len(tokens) < 2:
+            raise ValueError(
+                f"Invalid custom backend: {backend}, must be in the format of `module_name.class_name`"
+            )
+        module_name = ".".join(tokens[:-1])
+        class_name = tokens[-1]
+        try:
+            module = importlib.import_module(module_name)
+            cls = getattr(module, class_name)
+            if not issubclass(cls, StorageBackendInterface):
+                raise ValueError(
+                    f"Invalid custom backend: {backend}, must be a subclass of StorageBackendInterface"
+                )
+            custom_backend = cls(config, metadata, loop, memory_allocator,
+                                 dst_device, lookup_server)
+            backend_name = str(custom_backend)
+            storage_backends[backend_name] = custom_backend
+        except ImportError:
+            raise ValueError(
+                f"Invalid custom backend: {backend}, module {module_name} not found"
+            )
+
     # TODO(Jiayi): Please support other backends
     config.enable_blending = False
-    assert config.enable_blending is False, \
-        "blending is not supported for now"
+    assert config.enable_blending is False, "blending is not supported for now"
 
     return storage_backends
