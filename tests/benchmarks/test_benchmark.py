@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from lmcache.config import LMCacheEngineConfig, LMCacheEngineMetadata
-from lmcache.storage_backend.serde.cachegen_decoder import CacheGenDeserializer
-from lmcache.storage_backend.serde.cachegen_encoder import CacheGenSerializer
+from lmcache.experimental.storage_backend.naive_serde.cachegen_decoder import CacheGenDeserializer
+from lmcache.experimental.storage_backend.naive_serde.cachegen_encoder import CacheGenSerializer
 
 
 def generate_kv_cache(num_tokens, fmt, device):

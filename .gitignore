@@ -101,3 +101,6 @@ lmcache/experimental/tests
 
 # reference kernels
 /csrc/temp.cu
+
+.venv
+.vscode
