@@ -48,14 +48,13 @@ def CreateStorageBackends(
 
     if config.custom_backend is not None:
         import importlib
-        from lmcache.experimental.storage_backend.abstract_backend import (
-            StorageBackendInterface, )
+
         backend = config.custom_backend
         tokens = backend.split(".")
         if len(tokens) < 2:
             raise ValueError(
-                f"Invalid custom backend: {backend}, must be in the format of `module_name.class_name`"
-            )
+                f"Invalid custom backend: {backend}, must be in the format of"
+                + " `module_name.class_name`")
         module_name = ".".join(tokens[:-1])
         class_name = tokens[-1]
         try:
@@ -63,16 +62,16 @@ def CreateStorageBackends(
             cls = getattr(module, class_name)
             if not issubclass(cls, StorageBackendInterface):
                 raise ValueError(
-                    f"Invalid custom backend: {backend}, must be a subclass of StorageBackendInterface"
-                )
+                    f"Invalid custom backend: {backend}, must be a subclass" +
+                    " of StorageBackendInterface")
             custom_backend = cls(config, metadata, loop, memory_allocator,
                                  dst_device, lookup_server)
             backend_name = str(custom_backend)
             storage_backends[backend_name] = custom_backend
-        except ImportError:
+        except ImportError as e:
             raise ValueError(
-                f"Invalid custom backend: {backend}, module {module_name} not found"
-            )
+                f"Invalid custom backend: {backend}, module {module_name}" +
+                " not found") from e
 
     # TODO(Jiayi): Please support other backends
     config.enable_blending = False
