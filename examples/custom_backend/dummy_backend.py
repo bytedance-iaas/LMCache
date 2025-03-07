@@ -4,7 +4,6 @@ from typing import Optional
 
 import torch
 
-from lmcache.utils import CacheEngineKey
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.config import LMCacheEngineConfig
 from lmcache.experimental.lookup_server import LookupServerInterface
@@ -12,8 +11,8 @@ from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
                                                     MemoryObj)
 from lmcache.experimental.storage_backend.abstract_backend import \
     StorageBackendInterface
-
 from lmcache.logging import init_logger
+from lmcache.utils import CacheEngineKey
 
 logger = init_logger(__name__)
 
@@ -30,7 +29,7 @@ class DummyBackend(StorageBackendInterface):
         lookup_server: Optional[LookupServerInterface] = None,
     ):
         """
-        Initialize the storage backend. 
+        Initialize the storage backend.
 
         :param dst_device: the device where the blocking retrieved KV is stored,
             could be either "cpu", "cuda", or "cuda:0", "cuda:1", etc.
