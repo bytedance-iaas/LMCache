@@ -62,7 +62,7 @@ class DummyBackend(StorageBackendInterface):
         self,
         key: CacheEngineKey,
     ) -> Optional[Future]:
-        logger.info(f"submit prefetch tast {key} in dummy backend")
+        logger.info(f"submit prefetch task {key} in dummy backend")
         return None
 
     def get_blocking(
