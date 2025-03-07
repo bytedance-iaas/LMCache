@@ -96,6 +96,60 @@ class StorageManager:
         self.manager_lock.release()
         return memory_obj
 
+    async def put_sync(self, memory_objs: List[Tuple[CacheEngineKey, MemoryObj]]):
+        # from remote_pdb import set_trace
+        # set_trace()
+        tasks = [asyncio.create_task(self.create_put_task(tpl[0], tpl[1])) for tpl in memory_objs]
+        await asyncio.gather(*tasks)
+        logger.info("put_sync done")
+
+    async def create_put_task(
+        self,
+        key: CacheEngineKey,
+        memory_obj: MemoryObj,
+    ) -> None:
+        """
+        Non-blocking function to put the memory object into the storages.
+        Do not store if the same object is being stored (handled here by 
+        storage manager) or has been stored (handled by storage backend).
+        """
+        self.manager_lock.acquire()
+        if self.use_hot:
+            # During overwrite, we need to free the old memory object
+            # to avoid memory leak.
+            # NOTE(Jiayi): overwrite should not happen, at least for
+            # prefix caching
+            if key in self.hot_cache:
+                old_memory_obj = self.hot_cache.pop(key)
+                self.memory_allocator.ref_count_down(old_memory_obj)
+
+            self.hot_cache[key] = memory_obj
+            self.memory_allocator.ref_count_up(memory_obj)
+
+        # TODO(Jiayi): currently, the entire put task will be cancelled
+        # if one of the backend is already storing this cache.
+        # This might not be ideal.
+        for storage_backend in self.storage_backends.values():
+            if storage_backend.exists_in_put_tasks(key):
+                self.memory_allocator.ref_count_down(memory_obj)
+                self.manager_lock.release()
+                return
+        self.manager_lock.release()
+
+        #ever_put = False
+        for backend_name, backend in self.storage_backends.items():
+            put_task = backend.submit_put_task(key, memory_obj)
+
+            if put_task is None:
+                continue
+
+        self.manager_lock.acquire()
+        self.memory_allocator.ref_count_down(memory_obj)
+        self.manager_lock.release()
+
+        put_task.result()
+        return put_task
+
     def put(
         self,
         key: CacheEngineKey,

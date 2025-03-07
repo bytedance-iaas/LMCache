@@ -88,8 +88,31 @@ class RemoteBackend(StorageBackendInterface):
         lambda_callback = lambda f: \
                 self.put_callback(f, key)
         future.add_done_callback(lambda_callback)
-
+        # future.result()
         return future
+
+    # async def submit_put_task_sync(
+    #     self,
+    #     key: CacheEngineKey,
+    #     memory_obj: MemoryObj,
+    # ) -> Optional[Future]:
+
+    #     self.memory_allocator.ref_count_up(memory_obj)
+
+    #     self.put_tasks_lock.acquire()
+    #     self.put_tasks.append(key)
+    #     self.put_tasks_lock.release()
+
+    #     compressed_memory_obj = self.serializer.serialize(memory_obj)
+
+    #     future = asyncio.run_coroutine_threadsafe(
+    #         self.connection.put(key, compressed_memory_obj), self.loop)
+
+    #     lambda_callback = lambda f: \
+    #             self.put_callback(f, key)
+    #     future.add_done_callback(lambda_callback)
+    #     # future.result()
+    #     return future        
 
     def submit_prefetch_task(
         self,

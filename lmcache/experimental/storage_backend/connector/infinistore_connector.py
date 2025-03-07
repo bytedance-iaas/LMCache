@@ -3,6 +3,7 @@ import ctypes
 from typing import List, Optional, Union, no_type_check
 
 import infinistore
+from lmcache.experimental.memory_management import MemoryFormat
 
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
                                                     MemoryObj)
@@ -12,6 +13,8 @@ from lmcache.experimental.storage_backend.connector.base_connector import \
     RemoteConnector
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey
+
+import time
 
 logger = init_logger(__name__)
 
@@ -57,11 +60,37 @@ class InfinistoreConnector(RemoteConnector):
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
+        # from remote_pdb import set_trace
+        # set_trace()
+        logger.info(f"getting key: {key_str}")
+
+        # count = 5
+        # while count > 0:
+        #     try:
+        #         await self.rdma_conn.read_cache_single_async(
+        #             key_str + "metadata", _get_ptr(self.buffer), len(self.buffer))
+        #     except infinistore.lib.InfiniStoreKeyNotFound:
+        #         logger.warning("get metadata failed: InfiniStoreKeyNotFound")
+        #         count -= 1
+        #         asyncio.sleep(0.5)
+        #         continue
+        #     except infinistore.lib.InfiniStoreKeyNotCommited:
+        #         logger.warning("get metadata failed: InfiniStoreKeyNotCommited")
+        #         count -= 1
+        #         asyncio.sleep(0.5)
+        #         continue
+        #     except:
+        #         return None 
+        #     break
+        # if count == 0:
+        #     logger.warning("can't get key metadata")
+        #     return None
 
         try:
             await self.rdma_conn.read_cache_single_async(
                 key_str + "metadata", _get_ptr(self.buffer), len(self.buffer))
         except infinistore.lib.InfiniStoreKeyNotFound:
+            logger.warning("get metadata failed: InfiniStoreKeyNotFound")
             return None
 
         metadata = RedisMetadata.deserialize(self.buffer[:METADATA_BYTES_LEN])
@@ -78,30 +107,76 @@ class InfinistoreConnector(RemoteConnector):
         # TODO: we could have memory allocator which pre-allocate
         # and register RDMA memory.
         # register memory is a heavy operation, so we should avoid it.
-
-        kv_bytes = bytes(memory_obj.get_size())
-        pointer = ctypes.cast(ctypes.c_char_p(kv_bytes),
+        
+        ptr = None
+        if metadata.fmt == MemoryFormat.BINARY_BUFFER:
+            kv_bytes = bytes(memory_obj.get_size())
+            pointer = ctypes.cast(ctypes.c_char_p(kv_bytes),
                               ctypes.POINTER(ctypes.c_char))
-        ptr = ctypes.addressof(pointer.contents)
+            ptr = ctypes.addressof(pointer.contents)
+        elif metadata.fmt == MemoryFormat.KV_BLOB:
+            kv_chunk = memory_obj.tensor
+            # ptr = _get_ptr(memory_obj.byte_array)
+            # ptr = ctypes.addressof(ctypes.c_ubyte.from_buffer(memory_obj.byte_array))
+            ptr = kv_chunk.data_ptr()
+        else:
+            logger.info(f"Unsupported memory format: {metadata.fmt}")
+        assert ptr is not None            
         size = memory_obj.get_size()
+        logger.info(f"tensor: {memory_obj.tensor[0,0,0,0:10]}")
+        logger.info(f"size: {size}, key: {key_str}")
+        # logger.info(f"size: {size}, tensor")
 
+        # from remote_pdb import set_trace
+        # set_trace()
         await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
                                         size)
+
+        # count = 5
+        # while count > 0:
+        #     try:
+        #         await self.rdma_conn.read_cache_single_async(
+        #             key_str + "kv_bytes", ptr, size)
+        #     except infinistore.lib.InfiniStoreKeyNotFound:
+        #         logger.warning("get kv_byte failed: InfiniStoreKeyNotFound")
+        #         count -= 1
+        #         asyncio.sleep(0.5)
+        #         continue
+        #     except infinistore.lib.InfiniStoreKeyNotCommited:
+        #         logger.warning("get kv_byte failed: InfiniStoreKeyNotCommited")
+        #         count -= 1
+        #         asyncio.sleep(0.5)
+        #         continue
+        #     except:
+        #         return None
+        #     break
+        # if count == 0:
+        #     logger.warning("can't get key kv_bytes")
+        #     return None
 
         try:
             await self.rdma_conn.read_cache_single_async(
                 key_str + "kv_bytes", ptr, size)
         except infinistore.lib.InfiniStoreKeyNotFound:
-            return None
+            logger.warning("get kv_byte failed: InfiniStoreKeyNotFound")         
+            return None   
 
-        view = memoryview(memory_obj.byte_array)
-        view[:metadata.length] = kv_bytes
+        if metadata.fmt == MemoryFormat.BINARY_BUFFER:
+            view = memoryview(memory_obj.byte_array)
+            view[:metadata.length] = kv_bytes
 
+        # logger.info(f"size: {size}, key: {key_str}, tensor: {kv_chunk[0,0,0,0:10]}")
+        logger.info(f"tensor: {memory_obj.tensor[0,0,0,0:10]}")
+        logger.info(f"get key: {key_str} done")
         return memory_obj
 
     async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
-        # TODO(Jiayi): The following code is ugly.
-        # Please use a function like `memory_obj.to_meta()`.
+        key_str = key.to_string()
+        logger.info(f"putting key: {key_str}")
+
+        # from remote_pdb import set_trace
+        # set_trace()
+
         kv_bytes = memory_obj.byte_array
         kv_shape = memory_obj.get_shape()
         kv_dtype = memory_obj.get_dtype()
@@ -118,18 +193,40 @@ class InfinistoreConnector(RemoteConnector):
         self.buffer[:len(metadata_bytes)] = metadata_bytes
 
         await self.rdma_conn.rdma_write_cache_single_async(
-            key.to_string() + "metadata", _get_ptr(self.buffer),
+            key_str + "metadata", _get_ptr(self.buffer),
             len(self.buffer))
-
-        pointer = ctypes.cast(ctypes.c_char_p(memory_obj.byte_array),
+        # from remote_pdb import set_trace
+        # set_trace()
+        ptr = None
+        # memory_obj.byte_array is bytes
+        if memory_format == MemoryFormat.BINARY_BUFFER:
+            pointer = ctypes.cast(memory_obj.byte_array,
                               ctypes.POINTER(ctypes.c_char))
-        ptr = ctypes.addressof(pointer.contents)
+            ptr = ctypes.addressof(pointer.contents)
+        # memory_obj.byte_array is memoryview
+        elif memory_format == MemoryFormat.KV_BLOB:
+            kv_chunk = memory_obj.tensor
+            # ptr = _get_ptr(memory_obj.byte_array)
+            # ptr = ctypes.addressof(ctypes.c_ubyte.from_buffer(memory_obj.byte_array))
+            ptr = kv_chunk.data_ptr()
+        else:
+            logger.info(f"Unsupported memory format: {memory_format}")
+        assert ptr is not None
         size = memory_obj.get_size()
+        # logger.info(f"size: {size}, key: {key_str}, tensor: {kv_chunk[0,0,0,0:10]}")
+        logger.info(f"size: {size}, key: {key_str}, tensor: {memory_obj.tensor[0,0,0,0:10]}")
+
+        t1 = time.time()
         await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
                                         size)
+        t2 = time.time()
+        logger.info(f"register_mr duration: {t2-t1}")        
         await self.rdma_conn.rdma_write_cache_single_async(
-            key.to_string() + "kv_bytes", ptr, size)
+            key_str + "kv_bytes", ptr, size)
 
+        t3 = time.time()
+        logger.info(f"rdma_write_cache_single_async duration: {t3-t2}")        
+        logger.info(f"put key: {key.to_string()} done")
         self.memory_allocator.ref_count_down(memory_obj)
 
     # TODO

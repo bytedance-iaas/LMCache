@@ -16,6 +16,8 @@ from lmcache.observability import LMCacheStatsLogger, LMCStatsMonitor
 from lmcache.usage_context import InitializeUsageContext
 from lmcache.utils import _lmcache_nvtx_annotate
 
+import asyncio
+
 logger = init_logger(__name__)
 
 
@@ -106,6 +108,7 @@ class LMCacheEngine:
         else:
             monitor_req_id = self.stats_monitor.on_store_request(len(tokens))
 
+        memory_objs = []
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
             if self.storage_manager.contains(key):
@@ -126,12 +129,15 @@ class LMCacheEngine:
             # self.put_queue.put((key, memory_obj, start, end, kwargs))
 
             self.gpu_connector.from_gpu(memory_obj, start, end, **kwargs)
-            self.storage_manager.put(key, memory_obj)
+            memory_objs.append((key, memory_obj))
+            # self.storage_manager.put(key, memory_obj)
+        asyncio.run(self.storage_manager.put_sync(memory_objs))
         self.stats_monitor.on_store_finished(monitor_req_id)
 
     def store_hidden_states(self, tokens: torch.Tensor,
                             hidden_states: torch.Tensor) -> None:
 
+        logger.info(f"store_hidden_states, hidden states shape:{hidden_states.shape}, {hidden_states[0,0:10]}")
         hidden_states_key = self.token_database.make_hidden_states_key(tokens)
 
         # the LMCache backend assumes a tensor with 4 dimensions
@@ -144,8 +150,13 @@ class LMCacheEngine:
             logger.warning("Failed to allocate memory for the hidden states.")
             return
 
-        memory_obj.tensor.copy_(hidden_states, non_blocking=True)
-        self.storage_manager.put(hidden_states_key, memory_obj)
+        # from remote_pdb import set_trace
+        # set_trace()
+        memory_obj.tensor.copy_(hidden_states, non_blocking=False)
+        # self.storage_manager.put(hidden_states_key, memory_obj)
+        asyncio.run(self.storage_manager.put_sync([(hidden_states_key, memory_obj)]))
+        logger.info(f"store_hidden_states, hidden states shape:{hidden_states.shape}, {hidden_states[0,0,0,0:10]}")
+        logger.info(f"store hidden states done, key: {hidden_states_key.to_string()}")
 
     def retrieve_hidden_states(self,
                                tokens: torch.Tensor) -> Optional[torch.Tensor]:
@@ -164,7 +175,10 @@ class LMCacheEngine:
         # the LMCache backend demands a tensor with 4 dimensions
         # change it back
         assert len(memory_obj.tensor.shape) == 4
+        logger.info(f"retrieve_hidden_states, memory_obj.tensor shape:{memory_obj.tensor.shape}")
         hidden_states = memory_obj.tensor.squeeze(0).squeeze(0)
+        logger.info(f"hidden states shape:{hidden_states.shape}, {hidden_states[0,0:10]}")
+        logger.info(f"retrieve hidden states done, key: {hidden_states_key.to_string()}")
 
         return hidden_states
 

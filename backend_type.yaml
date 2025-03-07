@@ -1,0 +1,6 @@
+chunk_size: 32
+local_device: "cpu"
+remote_url: "infinistore://192.168.12.6:22345"
+remote_serde: "naive"
+max_local_cpu_size: 60
+pipelined_backend: False

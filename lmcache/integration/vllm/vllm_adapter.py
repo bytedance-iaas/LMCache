@@ -27,6 +27,8 @@ from lmcache.integration.vllm.utils import ENGINE_NAME, lmcache_get_config
 from lmcache.logging import init_logger
 from lmcache.utils import _lmcache_nvtx_annotate
 
+import time
+
 # FIXME(Jiayi): temporarily comment this out
 #from lmcache_vllm.blend_adapter import remove_request_id_indices
 
@@ -558,12 +560,15 @@ def lmcache_store_kv(
                                                   dtype=torch.bool)
                 kv_tensors_mask[:skipped_token_num] = False
 
+                t1 = time.time()
                 engine.store(current_tokens.cpu(),
                              kv_tensors_mask,
                              kvcaches=kv_caches,
                              slot_mapping=slot_mapping_req_full,
                              offset=skipped_token_num,
                              hidden_states=hidden_states)
+                t2 = time.time()
+                logger.info(f"engine.store duration: {t2-t1}")
             else:
                 stored_token_num = 0
                 skipped_token_num = seq_len
