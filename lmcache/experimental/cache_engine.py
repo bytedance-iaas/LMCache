@@ -108,17 +108,7 @@ class LMCacheEngine:
             multiple of the chunk size.
         """
         self.store_kv(tokens, mask, **kwargs)
-        if "hidden_states" in kwargs:
-            hidden_states = kwargs["hidden_states"]
-            if hidden_states is None:
-                return
-
-            if self.config.remote_serde != "naive":
-                logger.warning(
-                    "Hidden states storage only supports in naive serde mode.")
-                return
-
-            self.store_hidden_states(tokens, kwargs["hidden_states"])
+        self.store_hidden_states(tokens, kwargs.get("hidden_states"))
 
     def store_kv(self,
                  tokens: torch.Tensor,
@@ -162,7 +152,19 @@ class LMCacheEngine:
     def store_hidden_states(self, tokens: torch.Tensor,
                             hidden_states: torch.Tensor) -> None:
 
+        if hidden_states is None:
+            return
+
+        #TODO: support codegen serde mode
+        if self.config.remote_serde != "naive":
+            logger.warning(
+                "Hidden states storage only supports in naive serde mode.")
+            return
+
         hidden_states_key = self.token_database.make_hidden_states_key(tokens)
+
+        if self.storage_manager.contains(hidden_states_key):
+            return
 
         # the LMCache backend assumes a tensor with 4 dimensions
         assert len(hidden_states.shape) == 2
@@ -180,6 +182,7 @@ class LMCacheEngine:
     def retrieve_hidden_states(self,
                                tokens: torch.Tensor) -> Optional[torch.Tensor]:
 
+        #TODO: support codegen serde mode
         if self.config.remote_serde != "naive":
             logger.warning(
                 "Hidden states retrieval is supported in serde mode only.")
@@ -188,7 +191,7 @@ class LMCacheEngine:
         hidden_states_key = self.token_database.make_hidden_states_key(tokens)
         memory_obj = self.storage_manager.get(hidden_states_key)
         if memory_obj is None or memory_obj.tensor is None:
-            logger.error("Failed to retrieve the hidden states.")
+            logger.warning("Failed to retrieve the hidden states.")
             return None
 
         # the LMCache backend demands a tensor with 4 dimensions
@@ -222,6 +225,9 @@ class LMCacheEngine:
         :return: the boolean mask indicating which tokens are retrieved. The 
             length of the mask should be the same as the tokens. On CPU.
 
+        :return: the hidden states of the tokens. If all the tokens are
+            retrieved, the hidden states will be returned. Otherwise, None.
+
         :raises: ValueError if the number of Falses in the mask is not a 
             multiple of the chunk size.
         """
@@ -233,6 +239,9 @@ class LMCacheEngine:
                 len(tokens))
 
         ret_mask = torch.zeros_like(tokens, dtype=torch.bool, device="cpu")
+        # to track how many tokens are retrieved and decide whether the
+        # hidden states should be retrieved
+        last_token_idx = 0
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
 
@@ -249,6 +258,7 @@ class LMCacheEngine:
                     break
 
             ret_mask[start:end] = True
+            last_token_idx = end
 
             # NOTE(Jiayi): memory_obj doesn't have to be a pinned
             # cpu tensor for the sake of performance.
@@ -261,7 +271,10 @@ class LMCacheEngine:
         self.stats_monitor.on_retrieve_finished(monitor_req_id,
                                                 torch.sum(ret_mask))
 
-        hidden_states = self.retrieve_hidden_states(tokens)
+        hidden_states = self.retrieve_hidden_states(tokens) \
+            if last_token_idx == len(tokens) \
+            else None
+
         return ret_mask, hidden_states
 
     def prefetch(
