@@ -108,7 +108,6 @@ class LMCacheEngine:
             multiple of the chunk size.
         """
         self.store_kv(tokens, mask, **kwargs)
-        self.store_hidden_states(tokens, kwargs.get("hidden_states"))
 
     def store_kv(self,
                  tokens: torch.Tensor,
@@ -121,6 +120,7 @@ class LMCacheEngine:
         else:
             monitor_req_id = self.stats_monitor.on_store_request(len(tokens))
 
+        last_token_idx = 0
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
             if self.storage_manager.contains(key):
@@ -146,8 +146,12 @@ class LMCacheEngine:
             # Update lookup server
             if self.lookup_server is not None:
                 self.lookup_server.insert(key)
+            last_token_idx = end
 
         self.stats_monitor.on_store_finished(monitor_req_id)
+
+        if last_token_idx == len(tokens):
+            self.store_hidden_states(tokens, kwargs.get("hidden_states"))
 
     def store_hidden_states(self, tokens: torch.Tensor,
                             hidden_states: torch.Tensor) -> None:
