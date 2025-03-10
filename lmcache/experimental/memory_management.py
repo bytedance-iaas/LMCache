@@ -6,10 +6,14 @@ from enum import Enum
 from typing import Optional, Tuple, Union
 
 import sortedcontainers
+from collections import OrderedDict
 import torch
 
 from lmcache.logging import init_logger
 from lmcache.observability import LMCStatsMonitor
+from lmcache.experimental.lookup_server import LookupServerInterface
+
+from lmcache.utils import CacheEngineKey
 
 logger = init_logger(__name__)
 
@@ -728,3 +732,87 @@ class GPUMemoryAllocator(MemoryAllocatorInterface):
 
     def memcheck(self):
         return self.allocator.memcheck()
+
+class EvictableMemoryAllocator(MemoryAllocatorInterface):
+    """Allocates memory in the pre-allocated Host memory.
+    """
+
+    def __init__(self, memory_allocator: MemoryAllocatorInterface):
+        """
+        :param int size: The size of the pinned memory in bytes.
+        """
+        self.lru_cache: OrderedDict[int, MemoryObj]  = OrderedDict()
+        self.memory_allocator = memory_allocator
+        self.lock = threading.Lock()
+
+    def allocate(
+        self,
+        shape: Union[torch.Size, Tuple[int, ...]],
+        dtype: Optional[torch.dtype],
+        fmt: MemoryFormat = MemoryFormat.KV_BLOB,
+    ) -> Optional[MemoryObj]:
+        """
+        Allocate memory object with memory allocator.
+        Use LRU evictor if eviction is enabled.
+        """
+        # less skip binary buffer eviction for now.
+        self.lock.acquire()
+        if fmt == MemoryFormat.BINARY_BUFFER:
+            memory_obj = self.memory_allocator.allocate(shape, dtype, fmt)
+            self.lock.release()
+            return memory_obj
+
+        memory_obj = self.memory_allocator.allocate(shape, dtype)
+        if memory_obj is not None:
+            # self.manager_lock.release()
+            self.add_or_update(memory_obj.metadata.address, memory_obj)
+            self.lock.release()
+            return memory_obj
+
+        # memory_obj is None, we need to evict some memory
+        for evict_key in self.lru_cache:
+            evict_obj = self.lru_cache.pop(evict_key)
+            self.memory_allocator.free(evict_obj)
+            logger.debug("Evicting 1 chunk from lru cache")
+            memory_obj = self.memory_allocator.allocate(shape, dtype)
+            if memory_obj is not None:
+                break
+        self.lock.release()
+        return memory_obj
+
+    def free(self, memory_obj: MemoryObj):
+        with self.lock:
+            self.memory_allocator.free(memory_obj)
+
+    def ref_count_up(self, memory_obj: MemoryObj):
+        with self.lock:
+            self.memory_allocator.ref_count_up(memory_obj)
+
+    def ref_count_down(self, memory_obj: MemoryObj):
+        with self.lock:
+            self.memory_allocator.ref_count_down(memory_obj)
+
+    def get_ref_count(self, memory_obj: MemoryObj):
+        with self.lock:
+            return self.memory_allocator.get_ref_count(memory_obj)
+
+    def memcheck(self):
+        with self.lock:
+            return self.allocator.memcheck()
+    
+    def add_or_update(self, key: int, memory_obj: MemoryObj):
+        """add or update memory object in lru cache
+
+        Args:
+            key (int): the address of the memory object
+            memory_obj (MemoryObj): the memory object
+        """
+        with self.lock:
+            if memory_obj.get_memory_format() == MemoryFormat.BINARY_BUFFER:
+                return
+
+            if key in self.lru_cache:
+                self.lru_cache.move_to_end(key)
+            else:
+                self.lru_cache[key] = memory_obj
+   

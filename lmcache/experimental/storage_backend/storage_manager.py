@@ -11,7 +11,7 @@ from lmcache.experimental.config import LMCacheEngineConfig
 from lmcache.experimental.lookup_server import LookupServerInterface
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
                                                     MemoryFormat, MemoryObj,
-                                                    MixedMemoryAllocator)
+                                                    MixedMemoryAllocator, EvictableMemoryAllocator)
 from lmcache.experimental.storage_backend import CreateStorageBackends
 from lmcache.experimental.storage_backend.abstract_backend import \
     StorageBackendInterface
@@ -32,7 +32,7 @@ class StorageManager:
                  metadata: LMCacheEngineMetadata,
                  allocator: MemoryAllocatorInterface,
                  lookup_server: Optional[LookupServerInterface] = None):
-        self.memory_allocator = allocator
+        self.memory_allocator = EvictableMemoryAllocator(allocator)
         self.hot_cache: OrderedDict[CacheEngineKey, MemoryObj] = OrderedDict()
         self.use_hot = config.local_cpu
 
@@ -59,50 +59,50 @@ class StorageManager:
 
         self.stream = torch.cuda.Stream()
 
-    def allocate(
-        self,
-        shape: torch.Size,
-        dtype: torch.dtype,
-        eviction=True,
-    ) -> Optional[MemoryObj]:
-        """
-        Allocate memory object with memory allocator.
-        Use LRU evictor if eviction is enabled.
-        """
-        self.manager_lock.acquire()
-        memory_obj = self.memory_allocator.allocate(shape, dtype)
-        if not eviction or memory_obj is not None:
-            self.manager_lock.release()
-            return memory_obj
+    # def allocate(
+    #     self,
+    #     shape: torch.Size,
+    #     dtype: torch.dtype,
+    #     eviction=True,
+    # ) -> Optional[MemoryObj]:
+    #     """
+    #     Allocate memory object with memory allocator.
+    #     Use LRU evictor if eviction is enabled.
+    #     """
+    #     self.manager_lock.acquire()
+    #     memory_obj = self.memory_allocator.allocate(shape, dtype)
+    #     if not eviction or memory_obj is not None:
+    #         self.manager_lock.release()
+    #         return memory_obj
 
-        assert isinstance(self.memory_allocator, MixedMemoryAllocator)
-        evict_keys = []
+    #     assert isinstance(self.memory_allocator, EvictableMemoryAllocator)
+    #     evict_keys = []
 
-        for evict_key in self.hot_cache:
+    #     for evict_key in self.hot_cache:
 
-            # If the ref_count > 1, we cannot evict it as the hot cache
-            # might be used as buffers by other storage backends
-            if self.memory_allocator.get_ref_count(
-                    self.hot_cache[evict_key]) > 1:
-                continue
-            evict_keys.append(evict_key)
-            self.memory_allocator.ref_count_down(self.hot_cache[evict_key])
-            memory_obj = self.memory_allocator.allocate(shape, dtype)
-            logger.debug("Evicting 1 chunk from hot cache")
-            if memory_obj is not None:
-                break
-            # TODO(Jiayi): move this before the loop
-            # In this way, we don't need to do eviction for big objects
-            # TODO(Jiayi): the following code is hacky, please refactor
-            if self.memory_allocator.pin_allocator.num_active_allocations == 0:
-                break
-        for evict_key in evict_keys:
-            self.hot_cache.pop(evict_key)
-        if self.lookup_server is not None:
-            self.lookup_server.batched_remove(evict_keys)
+    #         # If the ref_count > 1, we cannot evict it as the hot cache
+    #         # might be used as buffers by other storage backends
+    #         if self.memory_allocator.get_ref_count(
+    #                 self.hot_cache[evict_key]) > 1:
+    #             continue
+    #         evict_keys.append(evict_key)
+    #         self.memory_allocator.ref_count_down(self.hot_cache[evict_key])
+    #         memory_obj = self.memory_allocator.allocate(shape, dtype)
+    #         logger.debug("Evicting 1 chunk from hot cache")
+    #         if memory_obj is not None:
+    #             break
+    #         # TODO(Jiayi): move this before the loop
+    #         # In this way, we don't need to do eviction for big objects
+    #         # TODO(Jiayi): the following code is hacky, please refactor
+    #         if self.memory_allocator.pin_allocator.num_active_allocations == 0:
+    #             break
+    #     for evict_key in evict_keys:
+    #         self.hot_cache.pop(evict_key)
+    #     if self.lookup_server is not None:
+    #         self.lookup_server.batched_remove(evict_keys)
 
-        self.manager_lock.release()
-        return memory_obj
+    #     self.manager_lock.release()
+    #     return memory_obj
 
     def put(
         self,
@@ -148,50 +148,50 @@ class StorageManager:
         self.memory_allocator.ref_count_down(memory_obj)
         self.manager_lock.release()
 
-    @_lmcache_nvtx_annotate
-    def _update_hot_cache(self, key: CacheEngineKey, memory_obj: MemoryObj):
-        if memory_obj is None or not self.use_hot:
-            return
+    # @_lmcache_nvtx_annotate
+    # def _update_hot_cache(self, key: CacheEngineKey, memory_obj: MemoryObj):
+    #     if memory_obj is None or not self.use_hot:
+    #         return
 
-        if memory_obj.tensor is not None and memory_obj.tensor.is_cuda:
-            self.manager_lock.acquire()
-            if key in self.hot_cache:
-                self.manager_lock.release()
-                return
-            self.manager_lock.release()
+    #     if memory_obj.tensor is not None and memory_obj.tensor.is_cuda:
+    #         self.manager_lock.acquire()
+    #         if key in self.hot_cache:
+    #             self.manager_lock.release()
+    #             return
+    #         self.manager_lock.release()
 
-            # Allocate a cpu memory object
-            cpu_memory_obj = self.memory_allocator.allocate(
-                memory_obj.get_shape(),
-                memory_obj.get_dtype(),
-                fmt=memory_obj.get_memory_format())
+    #         # Allocate a cpu memory object
+    #         cpu_memory_obj = self.memory_allocator.allocate(
+    #             memory_obj.get_shape(),
+    #             memory_obj.get_dtype(),
+    #             fmt=memory_obj.get_memory_format())
 
-            if cpu_memory_obj is None:
-                logger.warning(
-                    "Memory allocation failed in cachegen deserializer")
-                return None
+    #         if cpu_memory_obj is None:
+    #             logger.warning(
+    #                 "Memory allocation failed in cachegen deserializer")
+    #             return None
 
-            # Copy the tensor to the cpu memory object
-            assert cpu_memory_obj.tensor is not None
-            self.stream.wait_stream(torch.cuda.default_stream())
-            with torch.cuda.stream(self.stream):
-                cpu_memory_obj.tensor.copy_(memory_obj.tensor,
-                                            non_blocking=True)
-            memory_obj.tensor.record_stream(self.stream)
+    #         # Copy the tensor to the cpu memory object
+    #         assert cpu_memory_obj.tensor is not None
+    #         self.stream.wait_stream(torch.cuda.default_stream())
+    #         with torch.cuda.stream(self.stream):
+    #             cpu_memory_obj.tensor.copy_(memory_obj.tensor,
+    #                                         non_blocking=True)
+    #         memory_obj.tensor.record_stream(self.stream)
 
-            # Update the hot cache
-            self.manager_lock.acquire()
-            self.hot_cache[key] = cpu_memory_obj
-            self.memory_allocator.ref_count_up(cpu_memory_obj)
-            self.manager_lock.release()
-            logger.debug("Updated hot cache!")
-            return
-        else:
-            self.manager_lock.acquire()
-            if self.use_hot and key not in self.hot_cache:
-                self.hot_cache[key] = memory_obj
-                self.memory_allocator.ref_count_up(memory_obj)
-            self.manager_lock.release()
+    #         # Update the hot cache
+    #         self.manager_lock.acquire()
+    #         self.hot_cache[key] = cpu_memory_obj
+    #         self.memory_allocator.ref_count_up(cpu_memory_obj)
+    #         self.manager_lock.release()
+    #         logger.debug("Updated hot cache!")
+    #         return
+    #     else:
+    #         self.manager_lock.acquire()
+    #         if self.use_hot and key not in self.hot_cache:
+    #             self.hot_cache[key] = memory_obj
+    #             self.memory_allocator.ref_count_up(memory_obj)
+    #         self.manager_lock.release()
 
     def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         """
@@ -219,10 +219,14 @@ class StorageManager:
         self.manager_lock.acquire()
         memory_obj = self.hot_cache.get(key, None)
         if memory_obj is not None:
-            self.memory_allocator.ref_count_up(memory_obj)
-            self.hot_cache.move_to_end(key)
-            self.manager_lock.release()
-            return memory_obj
+            if memory_obj.is_valid():
+                self.memory_allocator.ref_count_up(memory_obj)
+                self.memory_allocator.add_or_update(memory_obj.metadata.address, memory_obj)
+                self.hot_cache.move_to_end(key)
+                self.manager_lock.release()
+                return memory_obj
+            else:
+                self.hot_cache.pop(key)
 
         self.manager_lock.release()
 
@@ -235,7 +239,7 @@ class StorageManager:
             # NOTE(Jiayi): bypass the allocator for now
             memory_obj = backend.get_blocking(key)
             if memory_obj is not None:
-                self._update_hot_cache(key, memory_obj)
+                # self._update_hot_cache(key, memory_obj)
                 return memory_obj
 
         return None
@@ -325,7 +329,7 @@ class StorageManager:
         """
         with self.manager_lock:
             if search_range is None or "Hot" in search_range:
-                if key in self.hot_cache:
+                if key in self.hot_cache and self.hot_cache[key].is_valid():
                     return True
 
             for backend_name, backend in self.storage_backends.items():
