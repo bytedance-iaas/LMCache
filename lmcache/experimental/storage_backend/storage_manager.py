@@ -45,7 +45,7 @@ class StorageManager:
         self.storage_backends: OrderedDict[str, StorageBackendInterface] =\
             CreateStorageBackends(
                 config, metadata,
-                self.loop, allocator, dst_device, lookup_server)
+                self.loop, self.memory_allocator, dst_device, lookup_server)
         self.prefetch_tasks: Dict[CacheEngineKey, Future] = {}
         self.put_tasks: Dict[str, Dict[CacheEngineKey, Tuple[Future,
                                                              MemoryObj]]] = {}
@@ -59,16 +59,18 @@ class StorageManager:
 
         self.stream = torch.cuda.Stream()
 
-    # def allocate(
-    #     self,
-    #     shape: torch.Size,
-    #     dtype: torch.dtype,
-    #     eviction=True,
-    # ) -> Optional[MemoryObj]:
-    #     """
-    #     Allocate memory object with memory allocator.
-    #     Use LRU evictor if eviction is enabled.
-    #     """
+    def allocate(
+        self,
+        shape: torch.Size,
+        dtype: torch.dtype,
+    ) -> Optional[MemoryObj]:
+        """
+        Allocate memory object with memory allocator.
+        Use LRU evictor if eviction is enabled.
+        """
+        with self.manager_lock:
+            return self.memory_allocator.allocate(shape, dtype)
+
     #     self.manager_lock.acquire()
     #     memory_obj = self.memory_allocator.allocate(shape, dtype)
     #     if not eviction or memory_obj is not None:
