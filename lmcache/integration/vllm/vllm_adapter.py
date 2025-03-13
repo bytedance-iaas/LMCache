@@ -731,8 +731,6 @@ def lmcache_retrieve_kv(
             else:
                 slot_mapping_req_full = slot_mapping[start_pos:end_pos]
 
-            print(f"Qian ~~~~~~~~~~~~ slot_mapping {slot_mapping_req_full}")
-
             # call lmcache retrieve
             ret_token_mask, seq_hidden_states = engine.retrieve(
                 full_token_tensor,
