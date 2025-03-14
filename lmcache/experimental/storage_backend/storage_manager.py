@@ -71,22 +71,19 @@ class StorageManager:
         if not eviction or memory_obj is not None:
             return memory_obj
 
+        if not self.use_hot:
+            return None
+
         assert isinstance(self.memory_allocator, MixedMemoryAllocator)
         evict_keys = []
-
-        for evict_key in self.hot_cache:
+        memory_obj = None
+        while len(self.hot_cache) > 0 and memory_obj is None:
+            (evict_key, temp_memory_obj) = self.hot_cache.popitem(last=False)
             evict_keys.append(evict_key)
-            memory_obj = self.memory_allocator.allocate(shape, dtype)
             logger.debug("Evicting 1 chunk from hot cache")
-            if memory_obj is not None:
-                break
-            # TODO(Jiayi): move this before the loop
-            # In this way, we don't need to do eviction for big objects
-            # TODO(Jiayi): the following code is hacky, please refactor
-            if self.memory_allocator.pin_allocator.num_active_allocations == 0:
-                break
-        for evict_key in evict_keys:
-            self.hot_cache.pop(evict_key)
+            self.memory_allocator.free(temp_memory_obj)
+            memory_obj = self.memory_allocator.allocate(shape, dtype)
+
         if self.lookup_server is not None:
             self.lookup_server.batched_remove(evict_keys)
 
