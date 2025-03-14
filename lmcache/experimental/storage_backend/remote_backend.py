@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import threading
 import time
 from concurrent.futures import Future
@@ -86,7 +87,7 @@ class RemoteBackend(StorageBackendInterface):
         # shallow copy is good enough here
         if compressed_memory_obj is memory_obj and \
             isinstance(memory_obj, TensorMemoryObj):
-            meta = memory_obj.metadata.copy()
+            meta = copy.copy(memory_obj.metadata)
             compressed_memory_obj =  TensorMemoryObj(
                 torch.empty(meta.shape, dtype=meta.dtype, device='cpu'),
                 metadata=meta,
