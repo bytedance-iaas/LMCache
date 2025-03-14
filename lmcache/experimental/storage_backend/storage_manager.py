@@ -53,8 +53,6 @@ class StorageManager:
         for backend_name in self.storage_backends.keys():
             self.put_tasks[backend_name] = {}
 
-        self.manager_lock = threading.Lock()
-
         self.lookup_server = lookup_server
 
         self.stream = torch.cuda.Stream()
@@ -69,24 +67,15 @@ class StorageManager:
         Allocate memory object with memory allocator.
         Use LRU evictor if eviction is enabled.
         """
-        self.manager_lock.acquire()
         memory_obj = self.memory_allocator.allocate(shape, dtype)
         if not eviction or memory_obj is not None:
-            self.manager_lock.release()
             return memory_obj
 
         assert isinstance(self.memory_allocator, MixedMemoryAllocator)
         evict_keys = []
 
         for evict_key in self.hot_cache:
-
-            # If the ref_count > 1, we cannot evict it as the hot cache
-            # might be used as buffers by other storage backends
-            if self.memory_allocator.get_ref_count(
-                    self.hot_cache[evict_key]) > 1:
-                continue
             evict_keys.append(evict_key)
-            self.memory_allocator.ref_count_down(self.hot_cache[evict_key])
             memory_obj = self.memory_allocator.allocate(shape, dtype)
             logger.debug("Evicting 1 chunk from hot cache")
             if memory_obj is not None:
@@ -101,7 +90,6 @@ class StorageManager:
         if self.lookup_server is not None:
             self.lookup_server.batched_remove(evict_keys)
 
-        self.manager_lock.release()
         return memory_obj
 
     def put(
@@ -114,7 +102,6 @@ class StorageManager:
         Do not store if the same object is being stored (handled here by 
         storage manager) or has been stored (handled by storage backend).
         """
-        self.manager_lock.acquire()
         if self.use_hot:
             # During overwrite, we need to free the old memory object
             # to avoid memory leak.
@@ -122,20 +109,17 @@ class StorageManager:
             # prefix caching
             if key in self.hot_cache:
                 old_memory_obj = self.hot_cache.pop(key)
-                self.memory_allocator.ref_count_down(old_memory_obj)
+                self.memory_allocator.free(old_memory_obj)
 
             self.hot_cache[key] = memory_obj
-            self.memory_allocator.ref_count_up(memory_obj)
+            self.hot_cache.move_to_end(key)
 
         # TODO(Jiayi): currently, the entire put task will be cancelled
         # if one of the backend is already storing this cache.
         # This might not be ideal.
         for storage_backend in self.storage_backends.values():
             if storage_backend.exists_in_put_tasks(key):
-                self.memory_allocator.ref_count_down(memory_obj)
-                self.manager_lock.release()
                 return
-        self.manager_lock.release()
 
         #ever_put = False
         for backend_name, backend in self.storage_backends.items():
@@ -144,21 +128,14 @@ class StorageManager:
             if put_task is None:
                 continue
 
-        self.manager_lock.acquire()
-        self.memory_allocator.ref_count_down(memory_obj)
-        self.manager_lock.release()
-
     @_lmcache_nvtx_annotate
     def _update_hot_cache(self, key: CacheEngineKey, memory_obj: MemoryObj):
         if memory_obj is None or not self.use_hot:
             return
 
         if memory_obj.tensor is not None and memory_obj.tensor.is_cuda:
-            self.manager_lock.acquire()
             if key in self.hot_cache:
-                self.manager_lock.release()
                 return
-            self.manager_lock.release()
 
             # Allocate a cpu memory object
             cpu_memory_obj = self.memory_allocator.allocate(
@@ -180,27 +157,19 @@ class StorageManager:
             memory_obj.tensor.record_stream(self.stream)
 
             # Update the hot cache
-            self.manager_lock.acquire()
             self.hot_cache[key] = cpu_memory_obj
-            self.memory_allocator.ref_count_up(cpu_memory_obj)
-            self.manager_lock.release()
             logger.debug("Updated hot cache!")
             return
         else:
-            self.manager_lock.acquire()
             if self.use_hot and key not in self.hot_cache:
                 self.hot_cache[key] = memory_obj
-                self.memory_allocator.ref_count_up(memory_obj)
-            self.manager_lock.release()
 
     def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         """
         Blocking function to get the memory object from the storages.
         """
         # Search in prefetch task
-        self.manager_lock.acquire()
         prefetch_task = self.prefetch_tasks.get(key, None)
-        self.manager_lock.release()
 
         # Wait until prefetch task finishes
         # Here, it is assumed all prefetch tasks load the memoryobj to
@@ -216,15 +185,11 @@ class StorageManager:
             prefetch_task.result(timeout=1)
 
         # Search in hot_cache
-        self.manager_lock.acquire()
         memory_obj = self.hot_cache.get(key, None)
         if memory_obj is not None:
-            self.memory_allocator.ref_count_up(memory_obj)
             self.hot_cache.move_to_end(key)
-            self.manager_lock.release()
             return memory_obj
 
-        self.manager_lock.release()
 
         # Search all backends for blocking get
         for backend_name, backend in self.storage_backends.items():
@@ -254,9 +219,7 @@ class StorageManager:
         """
         Update metadata after prefetch.
         """
-        self.manager_lock.acquire()
         prefetch_task = self.prefetch_tasks.pop(key)
-        self.manager_lock.release()
         try:
             buffer_memory_obj = prefetch_task.result()
         except Exception as e:
@@ -284,23 +247,17 @@ class StorageManager:
 
         # NOTE: no need to ref_count_up here because
         # the memory_obj's ref_count is already 1
-        self.manager_lock.acquire()
         self.hot_cache[key] = memory_obj
-        self.manager_lock.release()
 
     def prefetch(self, key: CacheEngineKey) -> None:
         """Launch a prefetch request in the storage backend. Non-blocking
         """
 
         # Call contains for each backend. Find the nearest cache
-        self.manager_lock.acquire()
         if key in self.hot_cache:
-            self.manager_lock.release()
             return
         if key in self.prefetch_tasks:
-            self.manager_lock.release()
             return
-        self.manager_lock.release()
 
         for backend in self.storage_backends.values():
             prefetch_task = backend.submit_prefetch_task(key)
@@ -309,10 +266,8 @@ class StorageManager:
             lambda_callback = lambda f: \
                 self.prefetch_callback(f, key)
 
-            self.manager_lock.acquire()
             self.prefetch_tasks[key] = prefetch_task
             prefetch_task.add_done_callback(lambda_callback)
-            self.manager_lock.release()
             break
 
     # TODO(Jiayi): Currently, search_range is only used for testing.
@@ -332,26 +287,24 @@ class StorageManager:
         
         return: True if the key exists in the specified storage backends.
         """
-        with self.manager_lock:
-            if search_range is None or "Hot" in search_range:
-                if key in self.hot_cache:
-                    return True
+        
+        if search_range is None or "Hot" in search_range:
+            if key in self.hot_cache:
+                return True
 
-            for backend_name, backend in self.storage_backends.items():
-                if search_range is not None and \
-                    backend_name not in search_range:
+        for backend_name, backend in self.storage_backends.items():
+            if search_range is not None and \
+                backend_name not in search_range:
                     continue
-                if backend.contains(key):
-                    return True
+            if backend.contains(key):
+                return True
 
-            return False
+        return False
 
     def close(self):
 
         if self.lookup_server is not None:
-            self.manager_lock.acquire()
             self.lookup_server.batched_remove(list(self.hot_cache.keys()))
-            self.manager_lock.release()
         for backend in self.storage_backends.values():
             backend.close()
 

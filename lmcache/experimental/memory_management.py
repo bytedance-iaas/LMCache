@@ -543,36 +543,28 @@ class HostMemoryAllocator(MemoryAllocatorInterface):
         buffer = torch.empty(size, dtype=torch.uint8, device="cpu")
         self.allocator = TensorMemoryAllocator(buffer)
 
-        self.host_mem_lock = threading.Lock()
-
     def allocate(
         self,
         shape: Union[torch.Size, Tuple[int, ...]],
         dtype: Optional[torch.dtype],
         fmt: MemoryFormat = MemoryFormat.KV_BLOB,
     ) -> Optional[MemoryObj]:
-        with self.host_mem_lock:
-            return self.allocator.allocate(shape, dtype, fmt)
+       return self.allocator.allocate(shape, dtype, fmt)
 
     def free(self, memory_obj: MemoryObj):
-        with self.host_mem_lock:
-            self.allocator.free(memory_obj)
+        self.allocator.free(memory_obj)
 
     def memcheck(self):
-        with self.host_mem_lock:
-            return self.allocator.memcheck()
+        return self.allocator.memcheck()
 
     def ref_count_up(self, memory_obj: MemoryObj):
-        with self.host_mem_lock:
-            self.allocator.ref_count_up(memory_obj)
+        self.allocator.ref_count_up(memory_obj)
 
     def ref_count_down(self, memory_obj: MemoryObj):
-        with self.host_mem_lock:
-            self.allocator.ref_count_down(memory_obj)
+        self.allocator.ref_count_down(memory_obj)
 
     def get_ref_count(self, memory_obj: MemoryObj):
-        with self.host_mem_lock:
-            return self.allocator.get_ref_count(memory_obj)
+        return self.allocator.get_ref_count(memory_obj)
 
 
 class PinMemoryAllocator(MemoryAllocatorInterface):
@@ -634,8 +626,6 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         self.pin_allocator = TensorMemoryAllocator(buffer)
         self.buffer_allocator = BufferAllocator("cpu")
 
-        self.host_mem_lock = threading.Lock()
-
     def allocate(
         self,
         shape: Union[torch.Size, Tuple[int, ...]],
@@ -645,8 +635,7 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         if fmt == MemoryFormat.BINARY_BUFFER:
             return self.buffer_allocator.allocate(shape, dtype, fmt)
         elif fmt == MemoryFormat.KV_BLOB:
-            with self.host_mem_lock:
-                return self.pin_allocator.allocate(shape, dtype, fmt)
+            return self.pin_allocator.allocate(shape, dtype, fmt)
         else:
             raise ValueError(f"Unsupported memory format: {fmt}")
 
@@ -655,8 +644,7 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         if fmt == MemoryFormat.BINARY_BUFFER:
             self.buffer_allocator.free(memory_obj)
         elif fmt == MemoryFormat.KV_BLOB:
-            with self.host_mem_lock:
-                self.pin_allocator.free(memory_obj)
+            self.pin_allocator.free(memory_obj)
         else:
             raise ValueError(f"Unsupported memory format: {fmt}")
 
@@ -665,8 +653,7 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         if fmt == MemoryFormat.BINARY_BUFFER:
             self.buffer_allocator.ref_count_up(memory_obj)
         elif fmt == MemoryFormat.KV_BLOB:
-            with self.host_mem_lock:
-                self.pin_allocator.ref_count_up(memory_obj)
+            self.pin_allocator.ref_count_up(memory_obj)
         else:
             raise ValueError(f"Unsupported memory format: {fmt}")
 
@@ -675,8 +662,7 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         if fmt == MemoryFormat.BINARY_BUFFER:
             self.buffer_allocator.ref_count_down(memory_obj)
         elif fmt == MemoryFormat.KV_BLOB:
-            with self.host_mem_lock:
-                self.pin_allocator.ref_count_down(memory_obj)
+            self.pin_allocator.ref_count_down(memory_obj)
         else:
             raise ValueError(f"Unsupported memory format: {fmt}")
 
@@ -685,14 +671,12 @@ class MixedMemoryAllocator(MemoryAllocatorInterface):
         if fmt == MemoryFormat.BINARY_BUFFER:
             return self.buffer_allocator.get_ref_count(memory_obj)
         elif fmt == MemoryFormat.KV_BLOB:
-            with self.host_mem_lock:
-                return self.pin_allocator.get_ref_count(memory_obj)
+            return self.pin_allocator.get_ref_count(memory_obj)
         else:
             raise ValueError(f"Unsupported memory format: {fmt}")
 
     def memcheck(self):
-        with self.host_mem_lock:
-            return self.pin_allocator.memcheck()
+        return self.pin_allocator.memcheck()
 
 
 class GPUMemoryAllocator(MemoryAllocatorInterface):

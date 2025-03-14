@@ -3,12 +3,14 @@ import threading
 import time
 from concurrent.futures import Future
 from typing import List, Optional
+import torch
 
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.config import LMCacheEngineConfig
 from lmcache.experimental.lookup_server import LookupServerInterface
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
-                                                    MemoryObj)
+                                                    MemoryObj,
+                                                    TensorMemoryObj)
 from lmcache.experimental.storage_backend.abstract_backend import \
     StorageBackendInterface
 from lmcache.experimental.storage_backend.connector import CreateConnector
@@ -32,7 +34,6 @@ class RemoteBackend(StorageBackendInterface):
     ):
 
         self.put_tasks: List[CacheEngineKey] = []
-        self.put_tasks_lock = threading.Lock()
 
         assert config.remote_url is not None
         # Initialize connection
@@ -63,16 +64,13 @@ class RemoteBackend(StorageBackendInterface):
         return future.result()
 
     def exists_in_put_tasks(self, key: CacheEngineKey) -> bool:
-        with self.put_tasks_lock:
-            return key in self.put_tasks
+        return key in self.put_tasks
 
     def put_callback(self, future: Future, key: CacheEngineKey):
         """
         Callback function for put tasks.
         """
-        self.put_tasks_lock.acquire()
         self.put_tasks.remove(key)
-        self.put_tasks_lock.release()
 
     def submit_put_task(
         self,
@@ -80,13 +78,20 @@ class RemoteBackend(StorageBackendInterface):
         memory_obj: MemoryObj,
     ) -> Optional[Future]:
 
-        self.memory_allocator.ref_count_up(memory_obj)
-
-        self.put_tasks_lock.acquire()
         self.put_tasks.append(key)
-        self.put_tasks_lock.release()
 
         compressed_memory_obj = self.serializer.serialize(memory_obj)
+        # if the compressed_memory_obj is the same object as memory_obj,
+        # we need to create a new object to avoid race condition
+        # shallow copy is good enough here
+        if compressed_memory_obj is memory_obj and \
+            isinstance(memory_obj, TensorMemoryObj):
+            meta = memory_obj.metadata.copy()
+            compressed_memory_obj =  TensorMemoryObj(
+                torch.empty(meta.shape, dtype=meta.dtype, device='cpu'),
+                metadata=meta,
+            )
+            compressed_memory_obj.tensor.copy_(memory_obj.tensor)
 
         future = asyncio.run_coroutine_threadsafe(
             self.connection.put(key, compressed_memory_obj), self.loop)

@@ -85,10 +85,10 @@ def _lmcache_nvtx_annotate(func, domain="lmcache"):
 
 ##### Threading related #####
 def thread_safe(func):
-    lock = threading.Lock()
+    # lock = threading.Lock()
 
     def wrapper(*args, **kwargs):
-        with lock:
-            return func(*args, **kwargs)
+        # with lock:
+        return func(*args, **kwargs)
 
     return wrapper
