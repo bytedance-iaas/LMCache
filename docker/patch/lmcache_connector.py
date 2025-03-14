@@ -64,9 +64,11 @@ class LMCacheConnector(KVConnectorBase):
         hidden_or_intermediate_states = None
 
         # TODO (Jiayi): Only normal prefill is supported for now
-        retrieve_status = [self.retrieve_status.PREFILL]
+        # TODO: hardcode the retrieve status in vllm_adapter to avoid
+        # index error, need to fix this.
+        retrieve_status = []
 
-        model_input, hidden_or_intermediate_states, bypass_model_exec = \
+        model_input, bypass_model_exec, hidden_or_intermediate_states = \
             self.lmcache_retrieve_kv(
                 model_executable, model_input, self.cache_config,
                 kv_caches, retrieve_status

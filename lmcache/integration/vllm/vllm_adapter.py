@@ -539,6 +539,10 @@ def lmcache_retrieve_kv(
 
     hidden_states_list = []
 
+    #TODO: hardcode the retrieve status in vllm_adapter to avoid
+    #index error, need to fix this.
+    retrieve_status = [RetrieveStatus.PREFILL] * len(seq_lens)
+
     chunk_prefill_full_hit = True
     for seq_group in seq_group_list:
         seq_ids = seq_group.seq_ids
