@@ -66,9 +66,9 @@ class LMCServerConnector(RemoteConnector):
         view = memoryview(buffer)
 
         while received < n:
-
             num_bytes = await self.loop.sock_recv_into(
-                self.client_socket, view[received:], n - received
+                self.client_socket,
+                view[received:]
             )
             if num_bytes == 0:
                 return None
