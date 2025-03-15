@@ -234,7 +234,7 @@ class StorageManager:
 
             # NOTE(Jiayi): bypass the allocator for now
             tmp_memory_obj = backend.get_blocking(key)
-            if memory_obj is not None:
+            if tmp_memory_obj is not None:
                 memory_obj = self.allocate(tmp_memory_obj.get_shape(),
                                            tmp_memory_obj.get_dtype())
                 if memory_obj is None:
