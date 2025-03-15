@@ -42,16 +42,26 @@ class LMCServerConnector(RemoteConnector):
         # than implementations that work with sockets.
         # However, we use socket here as we need to use the socket.recv_into()
         # to reduce memory copy.
-
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect((host, port))
+        self.client_sockets = []
+        for _ in range(4):
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.connect((host, port))
+            self.client_sockets.append(client_socket)
         # loop.sock_recv_into(sock, buf)
+        self.counter = 0
 
         self.memory_allocator = memory_allocator
         self.loop = loop
 
+    def get_client_socket(self):
+        idx = self.counter % len(self.client_sockets)
+        client_socket = self.client_sockets[idx]
+        self.counter += 1
+        return client_socket
+
     # TODO(Jiayi): This should be an async function
-    async def receive_all(self, meta: ServerMetaMessage) -> Optional[MemoryObj]:
+    async def receive_all(self, meta: ServerMetaMessage, client_socket) \
+        -> Optional[MemoryObj]:
         received = 0
         n = meta.length
 
@@ -64,10 +74,11 @@ class LMCServerConnector(RemoteConnector):
 
         buffer = memory_obj.byte_array
         view = memoryview(buffer)
+        client_socket = self.get_client_socket()
 
         while received < n:
             num_bytes = await self.loop.sock_recv_into(
-                self.client_socket,
+                client_socket,
                 view[received:]
             )
             if num_bytes == 0:
@@ -78,9 +89,10 @@ class LMCServerConnector(RemoteConnector):
 
     async def exists(self, key: CacheEngineKey) -> bool:
         # logger.debug("Call to exists()!")
+        client_socket = self.get_client_socket()
 
         await self.loop.sock_sendall(
-            self.client_socket,
+            client_socket,
             ClientMetaMessage(
                 Constants.CLIENT_EXIST,
                 key,
@@ -92,7 +104,7 @@ class LMCServerConnector(RemoteConnector):
         )
 
         response = await self.loop.sock_recv(
-            self.client_socket, ServerMetaMessage.packlength()
+            client_socket, ServerMetaMessage.packlength()
         )
 
         return ServerMetaMessage.deserialize(response).code == Constants.SERVER_SUCCESS
@@ -102,6 +114,7 @@ class LMCServerConnector(RemoteConnector):
         key: CacheEngineKey,
         memory_obj: MemoryObj,
     ):
+        client_socket = self.get_client_socket()
 
         kv_bytes = memory_obj.byte_array
         kv_shape = memory_obj.get_shape()
@@ -109,7 +122,7 @@ class LMCServerConnector(RemoteConnector):
         memory_format = memory_obj.get_memory_format()
 
         await self.loop.sock_sendall(
-            self.client_socket,
+            client_socket,
             ClientMetaMessage(
                 Constants.CLIENT_PUT,
                 key,
@@ -120,7 +133,7 @@ class LMCServerConnector(RemoteConnector):
             ).serialize(),
         )
 
-        await self.loop.sock_sendall(self.client_socket, kv_bytes)
+        await self.loop.sock_sendall(client_socket, kv_bytes)
 
 
     # TODO(Jiayi): This should be an async function
@@ -130,8 +143,9 @@ class LMCServerConnector(RemoteConnector):
         # we don't want to yield control to other tasks which could
         # sacrifice the performance loading to trade the performance of
         # saving
+        client_socket = self.get_client_socket()
         await self.loop.sock_sendall(
-            self.client_socket,
+            client_socket,
             ClientMetaMessage(
                 Constants.CLIENT_GET,
                 key,
@@ -143,14 +157,14 @@ class LMCServerConnector(RemoteConnector):
         )
 
         data = await self.loop.sock_recv(
-            self.client_socket, ServerMetaMessage.packlength()
+            client_socket, ServerMetaMessage.packlength()
         )
 
         meta = ServerMetaMessage.deserialize(data)
         if meta.code != Constants.SERVER_SUCCESS:
             return None
 
-        return await self.receive_all(meta)
+        return await self.receive_all(meta, client_socket)
 
     # TODO
     @no_type_check
@@ -158,5 +172,5 @@ class LMCServerConnector(RemoteConnector):
         pass
 
     async def close(self):
-        self.client_socket.close()
+        [client_socket.close() for client_socket in self.client_sockets]
         logger.info("Closed the lmserver connection")
