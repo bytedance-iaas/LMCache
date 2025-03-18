@@ -80,7 +80,7 @@ class InfinistoreConnector(RemoteConnector):
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
             metadata = RedisMetadata.deserialize(buffer[:METADATA_BYTES_LEN])
-        except infinistore.lib.InfiniStoreKeyNotFound:
+        except:
             logger.warning("get metadata failed: InfiniStoreKeyNotFound")
             return None
         finally:
@@ -113,14 +113,13 @@ class InfinistoreConnector(RemoteConnector):
         assert ptr is not None
         size = memory_obj.get_size()
 
-        await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
-                                        size)
-
         try:
+            await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
+                                        size)
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "kv_bytes", 0)], size, ptr)
-        except infinistore.lib.InfiniStoreKeyNotFound:
-            logger.warning("get metadata failed: InfiniStoreKeyNotFound")
+        except:
+            logger.warning("get kv_bytes failed: InfiniStoreKeyNotFound")
             return None
 
         if metadata.fmt == MemoryFormat.BINARY_BUFFER:
@@ -150,10 +149,14 @@ class InfinistoreConnector(RemoteConnector):
         buf_idx = await self.send_queue.get()
         buffer = self.send_buffers[buf_idx]
         buffer[:len(metadata_bytes)] = metadata_bytes
-
-        await self.rdma_conn.rdma_write_cache_async(
-            [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
-        self.send_queue.put_nowait(buf_idx)
+        try:
+            await self.rdma_conn.rdma_write_cache_async(
+                [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
+        except:
+            logger.warning("exception happens during rdma_write_cache_async metadata")
+            return
+        finally:
+            self.send_queue.put_nowait(buf_idx)
 
         ptr = None
         # memory_obj.byte_array is bytes
@@ -169,10 +172,16 @@ class InfinistoreConnector(RemoteConnector):
             logger.info(f"Unsupported memory format: {memory_format}")
         assert ptr is not None
         size = memory_obj.get_size()
-        await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
-                                        size)
-        await self.rdma_conn.rdma_write_cache_async(
-            [(key_str + "kv_bytes", 0)], size, ptr)
+
+        try:
+            await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
+                                            size)
+            await self.rdma_conn.rdma_write_cache_async(
+                [(key_str + "kv_bytes", 0)], size, ptr)
+        except:
+            logger.warning("exception happens during register_mr and rdma_write_cache_async kv_bytes")
+            return
+        
         logger.info(f"put key: {key.to_string()} done")
         self.memory_allocator.ref_count_down(memory_obj)
 
