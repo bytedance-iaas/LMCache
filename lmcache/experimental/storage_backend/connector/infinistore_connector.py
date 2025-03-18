@@ -4,7 +4,6 @@ from typing import List, Optional, Union, no_type_check
 
 import infinistore
 from lmcache.experimental.memory_management import MemoryFormat
-import queue
 
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
                                                     MemoryObj)
@@ -48,8 +47,8 @@ class InfinistoreConnector(RemoteConnector):
 
         self.send_buffers = []
         self.recv_buffers = []
-        self.send_queue = queue.Queue()
-        self.recv_queue = queue.Queue()
+        self.send_queue = asyncio.Queue(maxsize=MAX_BUFFER_CNT)
+        self.recv_queue = asyncio.Queue(maxsize=MAX_BUFFER_CNT)
 
         # 4KB buffer for send/recv metadata
         self.buffer_size = 4 << 10
@@ -57,12 +56,12 @@ class InfinistoreConnector(RemoteConnector):
             send_buffer = bytearray(self.buffer_size)
             self.rdma_conn.register_mr(_get_ptr(send_buffer), self.buffer_size)
             self.send_buffers.append(send_buffer)
-            self.send_queue.put(i)
+            self.send_queue.put_nowait(i)
 
             recv_buffer = bytearray(self.buffer_size)
             self.rdma_conn.register_mr(_get_ptr(recv_buffer), self.buffer_size)
             self.recv_buffers.append(recv_buffer)
-            self.recv_queue.put(i)
+            self.recv_queue.put_nowait(i)
 
     async def exists(self, key: CacheEngineKey) -> bool:
 
@@ -76,7 +75,7 @@ class InfinistoreConnector(RemoteConnector):
         logger.info(f"getting key: {key_str}")
 
         try:
-            buf_idx = self.recv_queue.get(block=True)
+            buf_idx = await self.recv_queue.get()
             buffer = self.recv_buffers[buf_idx]
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
@@ -85,7 +84,7 @@ class InfinistoreConnector(RemoteConnector):
             logger.warning("get metadata failed: InfiniStoreKeyNotFound")
             return None
         finally:
-            self.recv_queue.put(buf_idx)
+            self.recv_queue.put_nowait(buf_idx)
 
         memory_obj = self.memory_allocator.allocate(
             metadata.shape,
@@ -148,13 +147,13 @@ class InfinistoreConnector(RemoteConnector):
         assert len(metadata_bytes
                    ) <= self.buffer_size, "metadata size exceeds buffer size"
 
-        buf_idx = self.send_queue.get(block=True)
+        buf_idx = await self.send_queue.get()
         buffer = self.send_buffers[buf_idx]
         buffer[:len(metadata_bytes)] = metadata_bytes
 
         await self.rdma_conn.rdma_write_cache_async(
             [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
-        self.send_queue.put(buf_idx)
+        self.send_queue.put_nowait(buf_idx)
 
         ptr = None
         # memory_obj.byte_array is bytes
