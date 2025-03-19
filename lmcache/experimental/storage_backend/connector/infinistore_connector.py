@@ -32,7 +32,7 @@ class InfinistoreConnector(RemoteConnector):
         config = infinistore.ClientConfig(
             host_addr=host,
             service_port=port,
-            log_level="debug",
+            log_level="info",
             connection_type=infinistore.TYPE_RDMA,
             ib_port=1,
             link_type=infinistore.LINK_ETHERNET,
@@ -72,7 +72,7 @@ class InfinistoreConnector(RemoteConnector):
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
-        logger.info(f"getting key: {key_str}")
+        logger.debug(f"getting key: {key_str}")
 
         try:
             buf_idx = await self.recv_queue.get()
@@ -109,7 +109,7 @@ class InfinistoreConnector(RemoteConnector):
             kv_chunk = memory_obj.tensor
             ptr = kv_chunk.data_ptr()
         else:
-            logger.info(f"Unsupported memory format: {metadata.fmt}")
+            logger.warning(f"Unsupported memory format: {metadata.fmt}")
         assert ptr is not None
         size = memory_obj.get_size()
 
@@ -125,7 +125,7 @@ class InfinistoreConnector(RemoteConnector):
         if metadata.fmt == MemoryFormat.BINARY_BUFFER:
             view = memoryview(memory_obj.byte_array)
             view[:metadata.length] = kv_bytes
-        logger.info(f"get key: {key_str} done")
+        logger.debug(f"get key: {key_str} done")
 
         return memory_obj
 
@@ -133,7 +133,7 @@ class InfinistoreConnector(RemoteConnector):
         # TODO(Jiayi): The following code is ugly.
         # Please use a function like `memory_obj.to_meta()`.
         key_str = key.to_string()
-        logger.info(f"putting key: {key_str}")
+        logger.debug(f"putting key: {key_str}")
 
         kv_bytes = memory_obj.byte_array
         kv_shape = memory_obj.get_shape()
@@ -169,7 +169,7 @@ class InfinistoreConnector(RemoteConnector):
             kv_chunk = memory_obj.tensor
             ptr = kv_chunk.data_ptr()
         else:
-            logger.info(f"Unsupported memory format: {memory_format}")
+            logger.warning(f"Unsupported memory format: {memory_format}")
         assert ptr is not None
         size = memory_obj.get_size()
 
@@ -182,7 +182,7 @@ class InfinistoreConnector(RemoteConnector):
             logger.warning("exception happens during register_mr and rdma_write_cache_async kv_bytes")
             return
         
-        logger.info(f"put key: {key.to_string()} done")
+        logger.debug(f"put key: {key.to_string()} done")
         self.memory_allocator.ref_count_down(memory_obj)
 
     # TODO
