@@ -5,7 +5,7 @@ from typing import List, Optional, Union, no_type_check
 import infinistore
 
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
-                                                    MemoryObj)
+                                                    MemoryFormat, MemoryObj)
 # reuse
 from lmcache.experimental.protocol import RedisMetadata
 from lmcache.experimental.storage_backend.connector.base_connector import \
@@ -16,6 +16,8 @@ from lmcache.utils import CacheEngineKey
 logger = init_logger(__name__)
 
 METADATA_BYTES_LEN = 28
+
+MAX_BUFFER_CNT = 128
 
 
 def _get_ptr(mv: Union[bytearray, memoryview]) -> int:
@@ -43,10 +45,25 @@ class InfinistoreConnector(RemoteConnector):
         self.loop = loop
         self.rdma_conn.connect()
 
-        # allocate 4KB buffer for RDMA read
+        self.send_buffers = []
+        self.recv_buffers = []
+        self.send_queue: asyncio.Queue[int] = asyncio.Queue(
+            maxsize=MAX_BUFFER_CNT)
+        self.recv_queue: asyncio.Queue[int] = asyncio.Queue(
+            maxsize=MAX_BUFFER_CNT)
+
+        # 4KB buffer for send/recv metadata
         self.buffer_size = 4 << 10
-        self.buffer = bytearray(self.buffer_size)
-        self.rdma_conn.register_mr(_get_ptr(self.buffer), self.buffer_size)
+        for i in range(MAX_BUFFER_CNT):
+            send_buffer = bytearray(self.buffer_size)
+            self.rdma_conn.register_mr(_get_ptr(send_buffer), self.buffer_size)
+            self.send_buffers.append(send_buffer)
+            self.send_queue.put_nowait(i)
+
+            recv_buffer = bytearray(self.buffer_size)
+            self.rdma_conn.register_mr(_get_ptr(recv_buffer), self.buffer_size)
+            self.recv_buffers.append(recv_buffer)
+            self.recv_queue.put_nowait(i)
 
     async def exists(self, key: CacheEngineKey) -> bool:
 
@@ -57,14 +74,19 @@ class InfinistoreConnector(RemoteConnector):
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
+        logger.debug(f"getting key: {key_str}")
 
         try:
-            await self.rdma_conn.read_cache_single_async(
-                key_str + "metadata", _get_ptr(self.buffer), len(self.buffer))
-        except infinistore.lib.InfiniStoreKeyNotFound:
+            buf_idx = await self.recv_queue.get()
+            buffer = self.recv_buffers[buf_idx]
+            await self.rdma_conn.rdma_read_cache_async(
+                [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
+            metadata = RedisMetadata.deserialize(buffer[:METADATA_BYTES_LEN])
+        except Exception as e:
+            logger.warning(f"get metadata failed: {e}")
             return None
-
-        metadata = RedisMetadata.deserialize(self.buffer[:METADATA_BYTES_LEN])
+        finally:
+            self.recv_queue.put_nowait(buf_idx)
 
         memory_obj = self.memory_allocator.allocate(
             metadata.shape,
@@ -79,29 +101,43 @@ class InfinistoreConnector(RemoteConnector):
         # and register RDMA memory.
         # register memory is a heavy operation, so we should avoid it.
 
-        kv_bytes = bytes(memory_obj.get_size())
-        pointer = ctypes.cast(ctypes.c_char_p(kv_bytes),
-                              ctypes.POINTER(ctypes.c_char))
-        ptr = ctypes.addressof(pointer.contents)
+        ptr = None
+        if metadata.fmt == MemoryFormat.BINARY_BUFFER:
+            kv_bytes = bytes(memory_obj.get_size())
+            pointer = ctypes.cast(ctypes.c_char_p(kv_bytes),
+                                  ctypes.POINTER(ctypes.c_char))
+            ptr = ctypes.addressof(pointer.contents)
+        elif metadata.fmt == MemoryFormat.KV_BLOB:
+            kv_chunk = memory_obj.tensor
+            if kv_chunk is not None:
+                ptr = kv_chunk.data_ptr()
+        else:
+            logger.warning(f"Unsupported memory format: {metadata.fmt}")
+        assert ptr is not None
         size = memory_obj.get_size()
 
-        await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
-                                        size)
-
         try:
-            await self.rdma_conn.read_cache_single_async(
-                key_str + "kv_bytes", ptr, size)
-        except infinistore.lib.InfiniStoreKeyNotFound:
+            await self.loop.run_in_executor(None, self.rdma_conn.register_mr,
+                                            ptr, size)
+            await self.rdma_conn.rdma_read_cache_async(
+                [(key_str + "kv_bytes", 0)], size, ptr)
+        except Exception as e:
+            logger.warning(f"get kv_bytes failed: {e}")
             return None
 
-        view = memoryview(memory_obj.byte_array)
-        view[:metadata.length] = kv_bytes
+        if metadata.fmt == MemoryFormat.BINARY_BUFFER:
+            view = memoryview(memory_obj.byte_array)
+            view[:metadata.length] = kv_bytes
+        logger.debug(f"get key: {key_str} done")
 
         return memory_obj
 
     async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
         # TODO(Jiayi): The following code is ugly.
         # Please use a function like `memory_obj.to_meta()`.
+        key_str = key.to_string()
+        logger.debug(f"putting key: {key_str}")
+
         kv_bytes = memory_obj.byte_array
         kv_shape = memory_obj.get_shape()
         kv_dtype = memory_obj.get_dtype()
@@ -110,26 +146,49 @@ class InfinistoreConnector(RemoteConnector):
         metadata_bytes = RedisMetadata(len(kv_bytes), kv_shape, kv_dtype,
                                        memory_format).serialize()
 
-        # not likely to happen
         assert len(metadata_bytes
                    ) <= self.buffer_size, "metadata size exceeds buffer size"
 
-        # copy metadata to self.buffer
-        self.buffer[:len(metadata_bytes)] = metadata_bytes
+        buf_idx = await self.send_queue.get()
+        buffer = self.send_buffers[buf_idx]
+        buffer[:len(metadata_bytes)] = metadata_bytes
+        try:
+            await self.rdma_conn.rdma_write_cache_async(
+                [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
+        except Exception as e:
+            logger.warning(
+                f"exception happens in rdma_write_cache_async metadata {e}")
+            return
+        finally:
+            self.send_queue.put_nowait(buf_idx)
 
-        await self.rdma_conn.rdma_write_cache_single_async(
-            key.to_string() + "metadata", _get_ptr(self.buffer),
-            len(self.buffer))
-
-        pointer = ctypes.cast(ctypes.c_char_p(memory_obj.byte_array),
-                              ctypes.POINTER(ctypes.c_char))
-        ptr = ctypes.addressof(pointer.contents)
+        ptr = None
+        # memory_obj.byte_array is bytes
+        if memory_format == MemoryFormat.BINARY_BUFFER:
+            pointer = ctypes.cast(ctypes.c_char_p(memory_obj.byte_array),
+                                  ctypes.POINTER(ctypes.c_char))
+            ptr = ctypes.addressof(pointer.contents)
+        # memory_obj.byte_array is memoryview
+        elif memory_format == MemoryFormat.KV_BLOB:
+            kv_chunk = memory_obj.tensor
+            if kv_chunk is not None:
+                ptr = kv_chunk.data_ptr()
+        else:
+            logger.warning(f"Unsupported memory format: {memory_format}")
+        assert ptr is not None
         size = memory_obj.get_size()
-        await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
-                                        size)
-        await self.rdma_conn.rdma_write_cache_single_async(
-            key.to_string() + "kv_bytes", ptr, size)
 
+        try:
+            await self.loop.run_in_executor(None, self.rdma_conn.register_mr,
+                                            ptr, size)
+            await self.rdma_conn.rdma_write_cache_async(
+                [(key_str + "kv_bytes", 0)], size, ptr)
+        except Exception as e:
+            logger.warning(
+                f"exception happens in rdma_write_cache_async kv_bytes {e}")
+            return
+
+        logger.debug(f"put key: {key.to_string()} done")
         self.memory_allocator.ref_count_down(memory_obj)
 
     # TODO
