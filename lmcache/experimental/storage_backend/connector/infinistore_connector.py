@@ -3,10 +3,9 @@ import ctypes
 from typing import List, Optional, Union, no_type_check
 
 import infinistore
-from lmcache.experimental.memory_management import MemoryFormat
 
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
-                                                    MemoryObj)
+                                                    MemoryFormat, MemoryObj)
 # reuse
 from lmcache.experimental.protocol import RedisMetadata
 from lmcache.experimental.storage_backend.connector.base_connector import \
@@ -83,8 +82,8 @@ class InfinistoreConnector(RemoteConnector):
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
             metadata = RedisMetadata.deserialize(buffer[:METADATA_BYTES_LEN])
-        except:
-            logger.warning("get metadata failed: InfiniStoreKeyNotFound")
+        except Exception as e:
+            logger.warning(f"get metadata failed: {e}")
             return None
         finally:
             self.recv_queue.put_nowait(buf_idx)
@@ -122,8 +121,8 @@ class InfinistoreConnector(RemoteConnector):
                                             ptr, size)
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "kv_bytes", 0)], size, ptr)
-        except:
-            logger.warning("get kv_bytes failed: InfiniStoreKeyNotFound")
+        except Exception as e:
+            logger.warning(f"get kv_bytes failed: {e}")
             return None
 
         if metadata.fmt == MemoryFormat.BINARY_BUFFER:
@@ -156,9 +155,9 @@ class InfinistoreConnector(RemoteConnector):
         try:
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
-        except:
+        except Exception as e:
             logger.warning(
-                "exception happens during rdma_write_cache_async metadata")
+                f"exception happens in rdma_write_cache_async metadata {e}")
             return
         finally:
             self.send_queue.put_nowait(buf_idx)
@@ -184,10 +183,9 @@ class InfinistoreConnector(RemoteConnector):
                                             ptr, size)
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str + "kv_bytes", 0)], size, ptr)
-        except:
+        except Exception as e:
             logger.warning(
-                "exception happens during register_mr and rdma_write_cache_async kv_bytes"
-            )
+                f"exception happens in rdma_write_cache_async kv_bytes {e}")
             return
 
         logger.debug(f"put key: {key.to_string()} done")
