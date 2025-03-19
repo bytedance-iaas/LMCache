@@ -20,6 +20,7 @@ METADATA_BYTES_LEN = 28
 
 MAX_BUFFER_CNT = 128
 
+
 def _get_ptr(mv: Union[bytearray, memoryview]) -> int:
     return ctypes.addressof(ctypes.c_char.from_buffer(mv))
 
@@ -47,8 +48,10 @@ class InfinistoreConnector(RemoteConnector):
 
         self.send_buffers = []
         self.recv_buffers = []
-        self.send_queue = asyncio.Queue(maxsize=MAX_BUFFER_CNT)
-        self.recv_queue = asyncio.Queue(maxsize=MAX_BUFFER_CNT)
+        self.send_queue: asyncio.Queue[int] = asyncio.Queue(
+            maxsize=MAX_BUFFER_CNT)
+        self.recv_queue: asyncio.Queue[int] = asyncio.Queue(
+            maxsize=MAX_BUFFER_CNT)
 
         # 4KB buffer for send/recv metadata
         self.buffer_size = 4 << 10
@@ -107,15 +110,16 @@ class InfinistoreConnector(RemoteConnector):
             ptr = ctypes.addressof(pointer.contents)
         elif metadata.fmt == MemoryFormat.KV_BLOB:
             kv_chunk = memory_obj.tensor
-            ptr = kv_chunk.data_ptr()
+            if kv_chunk is not None:
+                ptr = kv_chunk.data_ptr()
         else:
             logger.warning(f"Unsupported memory format: {metadata.fmt}")
         assert ptr is not None
         size = memory_obj.get_size()
 
         try:
-            await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
-                                        size)
+            await self.loop.run_in_executor(None, self.rdma_conn.register_mr,
+                                            ptr, size)
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "kv_bytes", 0)], size, ptr)
         except:
@@ -153,7 +157,8 @@ class InfinistoreConnector(RemoteConnector):
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str + "metadata", 0)], len(buffer), _get_ptr(buffer))
         except:
-            logger.warning("exception happens during rdma_write_cache_async metadata")
+            logger.warning(
+                "exception happens during rdma_write_cache_async metadata")
             return
         finally:
             self.send_queue.put_nowait(buf_idx)
@@ -161,27 +166,30 @@ class InfinistoreConnector(RemoteConnector):
         ptr = None
         # memory_obj.byte_array is bytes
         if memory_format == MemoryFormat.BINARY_BUFFER:
-            pointer = ctypes.cast(memory_obj.byte_array,
+            pointer = ctypes.cast(ctypes.c_char_p(memory_obj.byte_array),
                                   ctypes.POINTER(ctypes.c_char))
             ptr = ctypes.addressof(pointer.contents)
         # memory_obj.byte_array is memoryview
         elif memory_format == MemoryFormat.KV_BLOB:
             kv_chunk = memory_obj.tensor
-            ptr = kv_chunk.data_ptr()
+            if kv_chunk is not None:
+                ptr = kv_chunk.data_ptr()
         else:
             logger.warning(f"Unsupported memory format: {memory_format}")
         assert ptr is not None
         size = memory_obj.get_size()
 
         try:
-            await self.loop.run_in_executor(None, self.rdma_conn.register_mr, ptr,
-                                            size)
+            await self.loop.run_in_executor(None, self.rdma_conn.register_mr,
+                                            ptr, size)
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str + "kv_bytes", 0)], size, ptr)
         except:
-            logger.warning("exception happens during register_mr and rdma_write_cache_async kv_bytes")
+            logger.warning(
+                "exception happens during register_mr and rdma_write_cache_async kv_bytes"
+            )
             return
-        
+
         logger.debug(f"put key: {key.to_string()} done")
         self.memory_allocator.ref_count_down(memory_obj)
 
