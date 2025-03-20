@@ -25,6 +25,10 @@ class LMCacheEngineMetadata:
     """ whether use MLA"""
     use_mla: bool
 
+    is_kv_producer: bool
+
+    is_kv_consumer: bool
+
 
 @dataclass
 class LMCacheMemPoolMetadata:

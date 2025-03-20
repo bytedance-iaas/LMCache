@@ -1,8 +1,13 @@
 import asyncio
+import zmq.asyncio
 import multiprocessing
+import requests
 from typing import Dict, List, Optional
 
+import time
 import torch
+import threading
+from collections import defaultdict
 
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.config import LMCacheEngineConfig
@@ -61,6 +66,35 @@ class LMCacheEngine:
 
         self.enable_p2p = config.enable_p2p
 
+
+        
+        # 
+        # connecto to decode peer
+
+
+
+        # decode_prefetch_tasks must be accessed in self.StorageManager.loop
+        self.decode_prefetch_tasks = {}
+
+
+        if metadata.is_kv_producer:
+            context = zmq.asyncio.Context()
+            self.socket = context.socket(zmq.PUSH)
+            self.socket.connect("tcp://localhost:5555")
+            self.zmq_loop = asyncio.new_event_loop()
+            self.zmq_thread = threading.Thread(target=self.zmq_loop.run_forever)
+            self.zmq_thread.start()
+
+        if metadata.is_kv_consumer:
+            context = zmq.Context()
+            self.socket = context.socket(zmq.PULL)
+            self.socket.bind("tcp://*:5555")
+            self.decode_prefetch_tasks = defaultdict(int)
+            self.listen_thread = threading.Thread(target=self.listen_zmq)
+            self.listen_thread.start()
+
+
+
         # NOTE: Unix systems use fork by default
         multiprocessing.set_start_method('spawn', force=True)
 
@@ -83,6 +117,17 @@ class LMCacheEngine:
                                        config)
         InitializeUsageContext(config.to_original_config(), metadata)
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
+
+
+    def notify_decoder(self, request_id):
+        asyncio.run_coroutine_threadsafe(self.task(None, request_id, 0), self.zmq_loop)
+
+
+    async def task(self, key, request_id: str, total: int):
+        # do not know if thread-safe
+        logger.info(f"sending zmq: {key}, {request_id}, {total}")
+        data = {"key": key, "request_id": request_id, "total": total}
+        await self.socket.send_pyobj(data)
 
     @_lmcache_nvtx_annotate
     @torch.inference_mode()
@@ -121,10 +166,22 @@ class LMCacheEngine:
             monitor_req_id = self.stats_monitor.on_store_request(len(tokens))
 
         last_token_idx = 0
+        assert "request_id" in kwargs
+        request_id = kwargs["request_id"]
+
+        #compute how many new tokens,how many chunks
+        num_true = sum(mask).item()
+        total = num_true // self.token_database.chunk_size
+        if num_true % self.token_database.chunk_size != 0:
+            total += 1
+        
+
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
-            if self.storage_manager.contains(key):
-                continue
+            
+            logger.info(f"processing token {key}, [{num_true} <= {len(tokens)}]")
+            # if self.storage_manager.contains(key):
+            #     continue
             # Allocate the memory object
             num_tokens = end - start
             kv_shape = self.gpu_connector.get_shape(num_tokens)
@@ -141,7 +198,14 @@ class LMCacheEngine:
             # self.put_queue.put((key, memory_obj, start, end, kwargs))
 
             self.gpu_connector.from_gpu(memory_obj, start, end, **kwargs)
-            self.storage_manager.put(key, memory_obj)
+            future = self.storage_manager.put(key, memory_obj)
+            
+            # callback to inform decode to receive kvcache.
+            def callback(fut, key=key, request_id=request_id, total=total):
+                asyncio.run_coroutine_threadsafe(self.task(key, request_id, total), self.zmq_loop)
+
+            if self.metadata.is_kv_producer:
+                future.add_done_callback(callback)
 
             # Update lookup server
             if self.lookup_server is not None:
@@ -204,6 +268,42 @@ class LMCacheEngine:
         hidden_states = memory_obj.tensor.squeeze(0).squeeze(0)
 
         return hidden_states
+    def listen_zmq(self):
+        while True:
+            msg = self.socket.recv_pyobj()
+            logger.info(f"Received {msg}")
+
+            if msg.get("total") == 0:
+                logger.info("new same request comming!!")
+                requests.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
+                continue
+
+            memory_obj = self.storage_manager.get(msg.get("key"))
+            if memory_obj is None:
+                logger.warning(f'''can not can get remote key {msg.get("key")} upfront''')
+                continue
+            
+            self.decode_prefetch_tasks[msg.get("request_id")] += 1
+            if self.decode_prefetch_tasks[msg.get("request_id")] == msg.get("total"):
+                del self.decode_prefetch_tasks[msg.get("request_id")]
+                logger.info("new request comming!!")
+                requests.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
+            
+            # TODO: async get
+            # start prefetching
+            # future = self.storage_manager.prefetch(msg.get("key"))
+
+            # def prefetch_callback(fut, msg=msg):
+            #     self.decode_prefetch_tasks[msg.get("request_id")] += 1
+            #     logger.info("my prefetch called")
+            #     if self.decode_prefetch_tasks[msg.get("request_id")] == msg.get("total"):
+            #         # send request back to http proxy
+            #         del self.decode_prefetch_tasks[msg.get("request_id")]
+            #         asyncio.run_coroutine_threadsafe(task(msg), self.zmq_loop)
+
+            # future.add_done_callback(prefetch_callback)
+
+
 
     @_lmcache_nvtx_annotate
     @torch.inference_mode()
@@ -251,7 +351,7 @@ class LMCacheEngine:
 
             # Get the memory object from the storage backend
             memory_obj = self.storage_manager.get(key)
-
+            
             if memory_obj is None:
                 if self.enable_p2p:
                     future_memory_obj = asyncio.run_coroutine_threadsafe(
@@ -293,6 +393,8 @@ class LMCacheEngine:
                 tokens, mask):
             self.storage_manager.prefetch(key)
 
+    
+
     # TODO(Jiayi): Currently, search_range is only used for testing.
     def lookup(
         self,
@@ -311,6 +413,13 @@ class LMCacheEngine:
         :return: An int indicating how many prefix tokens are cached.
         """
 
+        # for PD-disaggregation, only check remote storage.
+        if self.metadata.is_kv_producer:
+            for start, end, key in self.token_database.process_tokens(tokens):
+                if not self.storage_manager.remote_backend_contains(key, search_range):
+                    return start
+            return end
+
         for start, end, key in self.token_database.process_tokens(tokens):
             if not self.storage_manager.contains(key, search_range):
                 return start
@@ -318,6 +427,12 @@ class LMCacheEngine:
 
     def close(self) -> None:
         """Close the cache engine and free all the resources"""
+
+        if self.zmq_loop.is_running():
+            self.zmq_loop.call_soon_threadsafe(self.loop.stop)
+        if self.zmq_thread.is_alive():
+            self.zmq_thread.join()
+
 
         if self.enable_p2p:
             self.distributed_server.close()

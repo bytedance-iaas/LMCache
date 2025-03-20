@@ -108,7 +108,7 @@ class StorageManager:
         self,
         key: CacheEngineKey,
         memory_obj: MemoryObj,
-    ) -> None:
+    ):
         """
         Non-blocking function to put the memory object into the storages.
         Do not store if the same object is being stored (handled here by 
@@ -130,23 +130,24 @@ class StorageManager:
         # TODO(Jiayi): currently, the entire put task will be cancelled
         # if one of the backend is already storing this cache.
         # This might not be ideal.
-        for storage_backend in self.storage_backends.values():
-            if storage_backend.exists_in_put_tasks(key):
-                self.memory_allocator.ref_count_down(memory_obj)
-                self.manager_lock.release()
-                return
+        # for storage_backend in self.storage_backends.values():
+        #     if storage_backend.exists_in_put_tasks(key):
+        #         self.memory_allocator.ref_count_down(memory_obj)
+        #         self.manager_lock.release()
+        #         return
         self.manager_lock.release()
 
         #ever_put = False
+        remote_put_task = None
         for backend_name, backend in self.storage_backends.items():
             put_task = backend.submit_put_task(key, memory_obj)
-
-            if put_task is None:
-                continue
+            if backend_name == "RemoteBackend" and remote_put_task is None:
+                remote_put_task = put_task
 
         self.manager_lock.acquire()
         self.memory_allocator.ref_count_down(memory_obj)
         self.manager_lock.release()
+        return remote_put_task
 
     @_lmcache_nvtx_annotate
     def _update_hot_cache(self, key: CacheEngineKey, memory_obj: MemoryObj):
@@ -197,6 +198,7 @@ class StorageManager:
         """
         Blocking function to get the memory object from the storages.
         """
+
         # Search in prefetch task
         self.manager_lock.acquire()
         prefetch_task = self.prefetch_tasks.get(key, None)
@@ -223,6 +225,7 @@ class StorageManager:
             self.hot_cache.move_to_end(key)
             self.manager_lock.release()
             return memory_obj
+        
 
         self.manager_lock.release()
 
@@ -263,6 +266,14 @@ class StorageManager:
             logger.error(
                 f"Exception captured from future in prefetch_callback: {e}")
             raise e
+
+        if buffer_memory_obj is None:
+            logger.info(f"getting {key} is None")
+            return
+
+        logger.info(f"result of getting {key} is {buffer_memory_obj.tensor.shape}")
+
+        
         kv_chunk = buffer_memory_obj.tensor
         kv_shape = kv_chunk.shape
         kv_dtype = kv_chunk.dtype
@@ -282,16 +293,16 @@ class StorageManager:
         # TODO(Jiayi): please remove this hardcode
         memory_obj.metadata.fmt = MemoryFormat.KV_BLOB
 
+
         # NOTE: no need to ref_count_up here because
         # the memory_obj's ref_count is already 1
         self.manager_lock.acquire()
         self.hot_cache[key] = memory_obj
         self.manager_lock.release()
 
-    def prefetch(self, key: CacheEngineKey) -> None:
+    def prefetch(self, key: CacheEngineKey):
         """Launch a prefetch request in the storage backend. Non-blocking
         """
-
         # Call contains for each backend. Find the nearest cache
         self.manager_lock.acquire()
         if key in self.hot_cache:
@@ -314,6 +325,21 @@ class StorageManager:
             prefetch_task.add_done_callback(lambda_callback)
             self.manager_lock.release()
             break
+
+    
+
+    def remote_backend_contains(self, 
+                                key: CacheEngineKey,
+                                search_range: Optional[List[str]] = None
+                                ) -> bool:
+        with self.manager_lock:
+            for backend_name, backend in self.storage_backends.items():
+                if backend_name == "RemoteBackend":
+                    return backend.contains(key)
+            return False
+
+
+        
 
     # TODO(Jiayi): Currently, search_range is only used for testing.
     def contains(

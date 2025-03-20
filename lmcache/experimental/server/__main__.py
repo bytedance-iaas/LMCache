@@ -18,6 +18,7 @@ class LMCacheServer:
         # self.data_store = {}
         self.data_store = CreateStorageBackend(device)
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((host, port))
         self.server_socket.listen()
 
@@ -45,9 +46,11 @@ class LMCacheServer:
                         s = self.receive_all(client_socket, meta.length)
                         t1 = time.perf_counter()
                         self.data_store.put(meta, s)
+                        # send back 1 byte as ACK
+                        client_socket.send(b'A')
                         t2 = time.perf_counter()
                         print(
-                            f"Time to receive data: {t1 - t0}, time to store "
+                            f"Time to put data {meta.key}: {t1 - t0}, time to store "
                             f"data: {t2 - t1}")
 
                     case Constants.CLIENT_GET:
@@ -63,11 +66,13 @@ class LMCacheServer:
                                     lms_memory_obj.dtype,
                                     lms_memory_obj.shape,
                                 ).serialize())
+
+
                             t2 = time.perf_counter()
                             client_socket.sendall(lms_memory_obj.data)
                             t3 = time.perf_counter()
                             print(
-                                f"Time to get data: {t1 - t0}, time to send "
+                                f"Time to get data {meta.key}: {t1 - t0}, time to send "
                                 f"meta: {t2 - t1}, time to send data: {t3 - t2}"
                             )
                         else:
@@ -77,7 +82,7 @@ class LMCacheServer:
                                                   torch.float16,
                                                   torch.Size((0, 0, 0,
                                                               0))).serialize())
-
+                            print("can not found data")
                     case Constants.CLIENT_EXIST:
 
                         code = (Constants.SERVER_SUCCESS
@@ -88,7 +93,9 @@ class LMCacheServer:
                                               torch.float16,
                                               torch.Size(
                                                   (0, 0, 0, 0))).serialize())
-
+                        print(
+                            f"check exist for {meta.key}"
+                        )
                     # TODO(Jiayi): Implement List
                     # case Constants.CLIENT_LIST:
                     #     keys = list(self.data_store.list_keys())

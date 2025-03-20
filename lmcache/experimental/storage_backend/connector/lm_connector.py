@@ -88,7 +88,6 @@ class LMCServerConnector(RemoteConnector):
     ):
 
         #logger.debug("Async call to put()!")
-
         kv_bytes = memory_obj.byte_array
         kv_shape = memory_obj.get_shape()
         kv_dtype = memory_obj.get_dtype()
@@ -102,6 +101,7 @@ class LMCServerConnector(RemoteConnector):
                                   kv_shape).serialize())
 
             await self.loop.sock_sendall(self.client_socket, kv_bytes)
+            await self.loop.sock_recv(self.client_socket, 1)
 
         self.memory_allocator.ref_count_down(memory_obj)
 
@@ -118,13 +118,13 @@ class LMCServerConnector(RemoteConnector):
                                   MemoryFormat(1), torch.float16,
                                   torch.Size([0, 0, 0, 0])).serialize())
 
+            
             data = self.client_socket.recv(ServerMetaMessage.packlength())
 
-        meta = ServerMetaMessage.deserialize(data)
-        if meta.code != Constants.SERVER_SUCCESS:
-            return None
-
-        async with self.async_socket_lock:
+            meta = ServerMetaMessage.deserialize(data)
+            if meta.code != Constants.SERVER_SUCCESS:
+                logger.warning(f"get {key} failed")
+                return None
             memory_obj = self.receive_all(meta)
 
         return memory_obj

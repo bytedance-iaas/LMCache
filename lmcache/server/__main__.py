@@ -42,6 +42,7 @@ class LMCacheServer:
                         t1 = time.perf_counter()
                         # self.data_store[meta.key] = s
                         self.data_store.put(meta.key, s)
+                        print(f"~~~~~~~~~ server to write key {meta.key} length {meta.length}")
                         t2 = time.perf_counter()
                         # client_socket.sendall(ServerMetaMessage(
                         # Constants.SERVER_SUCCESS, 0).serialize())
@@ -54,6 +55,7 @@ class LMCacheServer:
                         t0 = time.perf_counter()
                         # data_string = self.data_store.get(meta.key, None)
                         data_string = self.data_store.get(meta.key)
+                        print(f"~~~~~~~~~ server to get key {meta.key} data string len {len(data_string)}")
                         t1 = time.perf_counter()
                         if data_string is not None:
                             client_socket.sendall(

@@ -101,7 +101,12 @@ class RemoteBackend(StorageBackendInterface):
         self,
         key: CacheEngineKey,
     ) -> Optional[Future]:
-        pass
+
+        logger.info(f"SUBMIT GET {key}")
+        future = asyncio.run_coroutine_threadsafe(
+            self.connection.get(key), self.loop
+        )
+        return future
 
     @_lmcache_nvtx_annotate
     def get_blocking(
