@@ -458,8 +458,8 @@ def lmcache_store_kv(
             else:
                 slot_mapping_req_full = slot_mapping[start_pos:end_pos]
 
-            if skip_leading_tokens < seq_len:
-                assert skip_leading_tokens % engine.config.chunk_size == 0
+            # if skip_leading_tokens < seq_len:
+                # assert skip_leading_tokens % engine.config.chunk_size == 0
 
                 # TODO(Jiayi): Turing is not supported yet
                 # need to write mem kernels for turing architecture
@@ -467,24 +467,24 @@ def lmcache_store_kv(
                 # TODO(Jiayi): prefix caching and chunk prefill
                 # might error here. `slot_mapping_seq` could be wrong
 
-                stored_token_num = seq_len - skip_leading_tokens
-                kv_tensors_mask = torch.ones_like(current_tokens,
-                                                    dtype=torch.bool)
-                kv_tensors_mask[:skip_leading_tokens] = False
+            stored_token_num = seq_len - skip_leading_tokens
+            kv_tensors_mask = torch.ones_like(current_tokens,
+                                                dtype=torch.bool)
+            kv_tensors_mask[:skip_leading_tokens] = False
 
-                engine.store(current_tokens.cpu(),
-                             kv_tensors_mask,
-                             kvcaches=kv_caches,
-                             slot_mapping=slot_mapping_req_full,
-                             offset=skip_leading_tokens,
-                             request_id = request_ids[seq_group_idx],
-                             hidden_states=hidden_states)
+            engine.store(current_tokens.cpu(),
+                            kv_tensors_mask,
+                            kvcaches=kv_caches,
+                            slot_mapping=slot_mapping_req_full,
+                            offset=skip_leading_tokens,
+                            request_id = request_ids[seq_group_idx],
+                            hidden_states=hidden_states)
 
-            else:
-                stored_token_num = 0
-                skip_leading_tokens = seq_len
-                if engine.metadata.is_kv_producer:
-                    engine.notify_decoder(request_ids[seq_group_idx])
+            # else:
+            #     stored_token_num = 0
+            #     skip_leading_tokens = seq_len
+            #     if engine.metadata.is_kv_producer:
+            #         engine.notify_decoder(request_ids[seq_group_idx])
 
 
             logger.debug(f"Store skips {skip_leading_tokens} tokens "\

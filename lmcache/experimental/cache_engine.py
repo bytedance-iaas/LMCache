@@ -72,12 +72,6 @@ class LMCacheEngine:
         # 
         # connecto to decode peer
 
-
-
-        # decode_prefetch_tasks must be accessed in self.StorageManager.loop
-        self.decode_prefetch_tasks = {}
-
-
         if metadata.is_kv_producer:
             context = zmq.asyncio.Context()
             self.socket = context.socket(zmq.PUSH)
@@ -118,10 +112,6 @@ class LMCacheEngine:
                                        config)
         InitializeUsageContext(config.to_original_config(), metadata)
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
-
-
-    def notify_decoder(self, request_id):
-        asyncio.run_coroutine_threadsafe(self.task(None, request_id, 0), self.zmq_loop)
 
 
     async def task(self, key, request_id: str, total: int):
@@ -172,9 +162,14 @@ class LMCacheEngine:
 
         #compute how many new tokens,how many chunks
         num_true = sum(mask).item()
+
+        # total kv_kvcache to store
         total = num_true // self.token_database.chunk_size
         if num_true % self.token_database.chunk_size != 0:
             total += 1
+    
+        # always send hidden states
+        total += 1
         
 
         for start, end, key in self.token_database.process_tokens(
@@ -211,15 +206,13 @@ class LMCacheEngine:
             # Update lookup server
             if self.lookup_server is not None:
                 self.lookup_server.insert(key)
-            last_token_idx = end
 
         self.stats_monitor.on_store_finished(monitor_req_id)
 
-        if last_token_idx == len(tokens):
-            self.store_hidden_states(tokens, kwargs.get("hidden_states"))
+        self.store_hidden_states(tokens, kwargs.get("hidden_states"), request_id, total)
 
     def store_hidden_states(self, tokens: torch.Tensor,
-                            hidden_states: torch.Tensor) -> None:
+                            hidden_states: torch.Tensor, request_id: str, total: int) -> None:
 
         if hidden_states is None:
             return
@@ -232,8 +225,9 @@ class LMCacheEngine:
 
         hidden_states_key = self.token_database.make_hidden_states_key(tokens)
 
-        if self.storage_manager.contains(hidden_states_key):
-            return
+        # if self.storage_manager.contains(hidden_states_key):
+        #     return
+        
 
         # the LMCache backend assumes a tensor with 4 dimensions
         assert len(hidden_states.shape) == 2
@@ -246,7 +240,15 @@ class LMCacheEngine:
             return
 
         memory_obj.tensor.copy_(hidden_states)
-        self.storage_manager.put(hidden_states_key, memory_obj)
+
+
+        # callback to inform decode to receive kvcache.
+        def callback(fut, key=hidden_states_key, request_id=request_id, total=total):
+            asyncio.run_coroutine_threadsafe(self.task(key, request_id, total), self.zmq_loop)
+        future = self.storage_manager.put(hidden_states_key, memory_obj)
+        if self.metadata.is_kv_producer:
+            future.add_done_callback(callback)
+
 
     def retrieve_hidden_states(self,
                                tokens: torch.Tensor) -> Optional[torch.Tensor]:
@@ -269,15 +271,11 @@ class LMCacheEngine:
         hidden_states = memory_obj.tensor.squeeze(0).squeeze(0)
 
         return hidden_states
+    
     def listen_zmq(self):
         while True:
             msg = self.socket.recv_pyobj()
             logger.info(f"Received {msg}")
-
-            if msg.get("total") == 0:
-                logger.info("new same request comming!!")
-                self.session.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
-                continue
 
             memory_obj = self.storage_manager.get(msg.get("key"))
             if memory_obj is None:
