@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.attention.backends.flashmla import FlashMLAMetadata
 from vllm.attention.backends.mla.common import MLACommonMetadata
-from vllm.config import CacheConfig, ModelConfig, ParallelConfig
+from vllm.config import CacheConfig, ModelConfig, ParallelConfig, KVTransferConfig
 from vllm.sequence import IntermediateTensors
 from vllm.utils import align_to_256bytes, get_kv_cache_torch_dtype
 
@@ -62,6 +62,7 @@ def init_lmcache_engine(
     model_config: ModelConfig,
     parallel_config: ParallelConfig,
     cache_config: CacheConfig,
+    kv_transfer_config: KVTransferConfig,
 ) -> Optional[LMCacheEngine]:
     """Initialize the LMCache engine by the given model config and parallel 
     config. This function will check the environment variable 
@@ -97,10 +98,14 @@ def init_lmcache_engine(
     chunk_size = config.chunk_size
     num_kv_head = model_config.get_num_kv_heads(parallel_config)
     head_size = model_config.get_head_size()
+
     if use_mla:
         kv_shape = (num_layer, 1, chunk_size, 1, head_size)
     else:
         kv_shape = (num_layer, 2, chunk_size, num_kv_head, head_size)
+        
+    is_kv_producer = kv_transfer_config.is_kv_producer
+    is_kv_consumer = kv_transfer_config.is_kv_consumer
 
     # Change current device.
     torch.cuda.device(parallel_config.rank)
@@ -118,6 +123,7 @@ def init_lmcache_engine(
         hidden_dim_size = num_kv_head * head_size
         vllm_gpu_connector = VLLMPagedMemGPUConnectorV2(
             hidden_dim_size, num_layer)
+
     assert isinstance(config, LMCacheEngineConfig), \
         "LMCache experimental configuration is should be passed."
     engine = LMCacheEngineBuilder.get_or_create(ENGINE_NAME, config, metadata,
@@ -368,6 +374,9 @@ def lmcache_store_kv(
 
     block_tables = model_input.attn_metadata.block_tables
 
+    request_ids = model_input.request_ids
+    assert request_ids is not None
+
     # TODO (Jiayi): commenting the following out for now
     # as Turing architecture is not supported yet
     # For Turing GPU
@@ -383,6 +392,7 @@ def lmcache_store_kv(
                                            seq_group_list is not None)
     seq_group_list = model_input.sampling_metadata.seq_groups
     assert seq_group_list is not None
+    assert len(seq_group_list) == len(request_ids)
 
     store_status = lmcache_should_store(model_input, engine)
 
@@ -458,7 +468,7 @@ def lmcache_store_kv(
 
                 stored_token_num = seq_len - skip_leading_tokens
                 kv_tensors_mask = torch.ones_like(current_tokens,
-                                                  dtype=torch.bool)
+                                                    dtype=torch.bool)
                 kv_tensors_mask[:skip_leading_tokens] = False
 
                 engine.store(current_tokens.cpu(),
@@ -466,10 +476,16 @@ def lmcache_store_kv(
                              kvcaches=kv_caches,
                              slot_mapping=slot_mapping_req_full,
                              offset=skip_leading_tokens,
+                             request_id = request_ids[seq_group_idx],
                              hidden_states=hidden_states)
+
             else:
                 stored_token_num = 0
                 skip_leading_tokens = seq_len
+                if engine.metadata.is_kv_producer:
+                    engine.notify_decoder(request_ids[seq_group_idx])
+
+
             logger.debug(f"Store skips {skip_leading_tokens} tokens "\
                     f"and then stores {stored_token_num} tokens")
             seq_data_idx += 1
