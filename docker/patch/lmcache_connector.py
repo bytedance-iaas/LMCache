@@ -60,7 +60,7 @@ class LMCacheConnector(KVConnectorBase):
         kv_caches: List[torch.Tensor]
     ) -> Tuple[Union[torch.Tensor, IntermediateTensors], bool,
                "ModelInputForGPUWithSamplingMetadata"]:
-
+        
         model_input, bypass_model_exec, hidden_or_intermediate_states = \
             self.lmcache_retrieve_kv(
                 self.model_config,
@@ -75,6 +75,7 @@ class LMCacheConnector(KVConnectorBase):
             bypass_model_exec = False
 
         return hidden_or_intermediate_states, bypass_model_exec, model_input
+
 
     def send_kv_caches_and_hidden_states(
         self,

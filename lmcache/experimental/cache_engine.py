@@ -65,6 +65,7 @@ class LMCacheEngine:
         self.gpu_connector = gpu_connector
 
         self.enable_p2p = config.enable_p2p
+        self.session = requests.Session()
 
 
         
@@ -275,7 +276,7 @@ class LMCacheEngine:
 
             if msg.get("total") == 0:
                 logger.info("new same request comming!!")
-                requests.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
+                self.session.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
                 continue
 
             memory_obj = self.storage_manager.get(msg.get("key"))
@@ -287,7 +288,7 @@ class LMCacheEngine:
             if self.decode_prefetch_tasks[msg.get("request_id")] == msg.get("total"):
                 del self.decode_prefetch_tasks[msg.get("request_id")]
                 logger.info("new request comming!!")
-                requests.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
+                self.session.post("http://127.0.0.1:8080/v1/kv_cache_ready", json={"request_id": msg.get("request_id")})
             
             # TODO: async get
             # start prefetching

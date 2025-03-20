@@ -112,7 +112,8 @@ def init_lmcache_engine(
     metadata = LMCacheEngineMetadata(model_config.model,
                                      parallel_config.world_size,
                                      parallel_config.rank, "vllm", kv_dtype,
-                                     kv_shape, use_mla)
+                                     kv_shape, use_mla, is_kv_producer,
+                                     is_kv_consumer)
 
     vllm_gpu_connector: GPUConnectorInterface
     if use_mla:
