@@ -1,13 +1,17 @@
 import threading
 from collections import OrderedDict
 from typing import List, Optional
+import sys
 
 from lmcache.experimental.protocol import ClientMetaMessage
 from lmcache.experimental.server.storage_backend.abstract_backend import \
     LMSBackendInterface
+from lmcache.experimental.storage_backend.evictor.lru_evictor import LRUEvictor
+from lmcache.experimental.storage_backend.evictor.base_evictor import PutStatus
 from lmcache.experimental.server.utils import LMSMemoryObj
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey, _lmcache_nvtx_annotate
+
 
 logger = init_logger(__name__)
 
@@ -18,6 +22,7 @@ class LMSLocalBackend(LMSBackendInterface):
         self.dict: OrderedDict[CacheEngineKey, LMSMemoryObj] = OrderedDict()
 
         self.lock = threading.Lock()
+        self.evictor = LRUEvictor(10.0)
 
         # TODO(Jiayi): please add evictor
 
@@ -57,6 +62,11 @@ class LMSLocalBackend(LMSBackendInterface):
                 client_meta.dtype,
                 client_meta.shape,
             )
+            keys, status = self.evictor.update_on_put(self.dict, sys.getsizeof(kv_chunk_bytes))
+            if status == PutStatus.ILLEGAL:
+                return
+            for key in keys:
+                self.dict.pop(key)
 
     @_lmcache_nvtx_annotate
     def get(
@@ -65,7 +75,10 @@ class LMSLocalBackend(LMSBackendInterface):
     ) -> Optional[LMSMemoryObj]:
 
         with self.lock:
-            return self.dict.get(key, None)
+            res = self.dict.get(key, None)
+            if res is not None:
+                self.evictor.update_on_get(self.dict)
+            return res
 
     def close(self):
         pass
