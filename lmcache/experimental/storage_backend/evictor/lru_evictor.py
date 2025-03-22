@@ -5,7 +5,6 @@ from lmcache.experimental.storage_backend.evictor.base_evictor import (
     BaseEvictor, PutStatus)
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey
-import sys
 
 logger = init_logger(__name__)
 
@@ -31,18 +30,19 @@ class LRUEvictor(BaseEvictor):
             self, cache_dict: OrderedDict,
             cache_size: int) -> Tuple[List[CacheEngineKey], PutStatus]:
         evict_keys = []
+        iter_cache_dict = iter(cache_dict)
 
         if cache_size > self.MAX_CACHE_SIZE:
             logger.warning("Put failed due to limited cache storage")
             return [], PutStatus.ILLEGAL
 
-        for key in cache_dict.keys():
-            if cache_size + self.current_cache_size > \
-                self.MAX_CACHE_SIZE:
-                break
-            evict_cache_size = sys.getsizeof(cache_dict[key])
+        # evict cache until there's enough space
+        while cache_size + self.current_cache_size > \
+            self.MAX_CACHE_SIZE:
+            evict_key = next(iter_cache_dict)
+            evict_cache_size = cache_dict[evict_key].size
             self.current_cache_size -= evict_cache_size
-            evict_keys.append(key)
+            evict_keys.append(evict_key)
 
         # update cache size
         self.current_cache_size += cache_size
