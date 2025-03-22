@@ -406,14 +406,15 @@ def lmcache_store_kv(
         end_pos = start_pos + slen
         seq_len = seq_lens[seq_data_idx]
 
-        current_tokens = torch.tensor(input_tokens[start_pos:end_pos], device="cpu")
+        current_tokens = input_tokens[start_pos:end_pos]
         slot_mapping_req_full = slot_mapping[start_pos:end_pos]
         skip_leading_tokens = 0
         kv_tensors_mask = None
+        token_mask = torch.ones_like(current_tokens, dtype=torch.bool)
 
         engine.store(
-            current_tokens,
-            kv_tensors_mask,
+            current_tokens.cpu(),
+            token_mask,
             kvcaches=kv_caches,
             slot_mapping=slot_mapping_req_full,
             offset=skip_leading_tokens,
