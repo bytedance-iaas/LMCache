@@ -184,7 +184,7 @@ class LMCacheEngine:
         request_id = kwargs["request_id"]
 
         #compute how many new tokens,how many chunks
-        num_true = sum(mask).item()
+        num_true = len(tokens) if mask is None else torch.sum(mask).item()
 
         # total kv_kvcache to store
         total = num_true // self.token_database.chunk_size
