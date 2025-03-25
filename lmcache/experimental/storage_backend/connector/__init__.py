@@ -106,7 +106,7 @@ def CreateConnector(
                     f" {url}")
         case "infinistore":
             host, port = parsed_url.hosts[0], parsed_url.ports[0]
-            connector = InfinistoreConnector(host, port, "mlx5_0", loop,
+            connector = InfinistoreConnector(host, port, "mlx5_3", loop,
                                              memory_allocator)
         case _:
             raise ValueError(

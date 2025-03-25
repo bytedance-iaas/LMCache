@@ -5,8 +5,9 @@ from typing import List, Optional, Tuple, Union, no_type_check
 
 import redis
 
+import torch
 from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
-                                                    MemoryObj)
+                                                    MemoryObj, TensorMemoryObj)
 from lmcache.experimental.protocol import RedisMetadata
 from lmcache.experimental.storage_backend.connector.base_connector import \
     RemoteConnector
@@ -50,14 +51,14 @@ class RedisConnector(RemoteConnector):
         redis_metadata = RedisMetadata.deserialize(
             memoryview(redis_metadata_bytes))
 
-        memory_obj = self.memory_allocator.allocate(
-            redis_metadata.shape,
-            redis_metadata.dtype,
-            redis_metadata.fmt,
-        )
-        if memory_obj is None:
-            logger.warning("Failed to allocate memory during remote receive")
-            return None
+        # memory_obj = self.memory_allocator.allocate(
+        #     redis_metadata.shape,
+        #     redis_metadata.dtype,
+        #     redis_metadata.fmt,
+        # )
+        # if memory_obj is None:
+        #     logger.warning("Failed to allocate memory during remote receive")
+        #     return None
 
         # TODO(Jiayi): Find a way to do `get` inplace
         kv_bytes = self.connection.get(key_str + "kv_bytes")
@@ -65,8 +66,16 @@ class RedisConnector(RemoteConnector):
         assert not inspect.isawaitable(kv_bytes)
         assert kv_bytes is not None
 
-        view = memoryview(memory_obj.byte_array)
-        view[:redis_metadata.length] = kv_bytes
+
+        temp_tensor = torch.frombuffer(kv_bytes, dtype=redis_metadata.dtype).reshape(redis_metadata.shape)
+
+
+        memory_obj = TensorMemoryObj(
+            raw_data=temp_tensor,
+            metadata=redis_metadata,
+        )
+        # view = memoryview(memory_obj.byte_array)
+        # view[:redis_metadata.length] = kv_bytes
 
         return memory_obj
 

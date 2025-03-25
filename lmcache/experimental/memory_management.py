@@ -143,6 +143,8 @@ class MemoryObj(metaclass=abc.ABCMeta):
         raise NotImplementedError
 
 
+
+
 class TensorMemoryObj(MemoryObj):
     """
     Wraps a raw flat tensor with some metadata
@@ -201,6 +203,16 @@ class TensorMemoryObj(MemoryObj):
         byte_array = (ctypes.c_ubyte * num_bytes).from_address(
             ctypes.addressof(ubyte_ptr.contents))
         return memoryview(byte_array)
+
+
+
+class CopyLessMemoryObj(TensorMemoryObj):
+    pass
+    def __init__(self, raw_data, metadata, callback):
+        super().__init__(raw_data, metadata)
+        self.callback = callback
+    def __del__(self):
+        self.callback
 
 
 class BytesBufferMemoryObj(MemoryObj):

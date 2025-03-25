@@ -220,8 +220,17 @@ class LMCacheEngine:
             future = self.storage_manager.put(key, memory_obj)
             
             # callback to inform decode to receive kvcache.
-            def callback(fut, key=key, request_id=request_id, total=total):
+            def callback(fut, key=key, request_id=request_id, total=total, t1=time.perf_counter()):
+                
+                exc = fut.exception()
+                if exc is not None:
+                    print(exc)
+                    raise exc
+                else:
+                    fut.result()
+
                 asyncio.run_coroutine_threadsafe(self.task(key, request_id, total), self.zmq_loop)
+                logger.debug(f"Put takes {(time.perf_counter() - t1) * 1000:.6f} msec, ")
 
             if self.metadata.is_kv_producer:
                 future.add_done_callback(callback)
@@ -308,7 +317,7 @@ class LMCacheEngine:
             self.decode_prefetch_tasks[msg.get("request_id")] += 1
             if self.decode_prefetch_tasks[msg.get("request_id")] == msg.get("total"):
                 del self.decode_prefetch_tasks[msg.get("request_id")]
-                logger.info(f"new request comming!!  {self.metadata.world_size}")
+                logger.info(f'''new request coming!!  world_size: {self.metadata.world_size},request_id :{msg.get("request_id")}''')
                 self.session.post(self.config.kv_cache_ready_url, json={"request_id": msg.get("request_id"), "world_size": self.metadata.world_size})
             
             # TODO: async get
