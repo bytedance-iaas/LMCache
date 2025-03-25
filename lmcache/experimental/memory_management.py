@@ -212,7 +212,7 @@ class CopyLessMemoryObj(TensorMemoryObj):
         super().__init__(raw_data, metadata)
         self.callback = callback
     def __del__(self):
-        self.callback
+        self.callback()
 
 
 class BytesBufferMemoryObj(MemoryObj):

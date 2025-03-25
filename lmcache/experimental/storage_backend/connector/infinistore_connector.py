@@ -61,6 +61,9 @@ class InfinistoreConnector(RemoteConnector):
         self.recv_queue: asyncio.Queue[int] = asyncio.Queue(
             maxsize=MAX_BUFFER_CNT)
 
+        self.get_sum = 0
+        self.put_sum = 0
+
         # 1KB
         self.meta_buffer_size = 1 << 10   
         
@@ -112,7 +115,8 @@ class InfinistoreConnector(RemoteConnector):
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
-        logger.debug(f"getting key: {key_str}")
+        self.get_sum += 1
+        logger.debug(f"getting key: {key_str}, get_sum {self.get_sum}")
 
         t0 = time.perf_counter()
         try:
@@ -120,10 +124,9 @@ class InfinistoreConnector(RemoteConnector):
             buffer = self.recv_buffers[buf_idx]
             await self.rdma_conn.rdma_read_cache_async(
                 [(key_str + "metadata", 0)], METADATA_BYTES_LEN, _get_ptr(buffer))
+
             metadata = RedisMetadata.deserialize(buffer)
-        except Exception as e:
-            logger.warning(f"get metadata failed: {e}")
-            return None
+
         finally:
             self.recv_queue.put_nowait(buf_idx)
 
@@ -183,6 +186,7 @@ class InfinistoreConnector(RemoteConnector):
     async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
 
 
+        self.put_sum += 0
         t0 = time.perf_counter()
 
         # TODO(Jiayi): The following code is ugly.
@@ -285,7 +289,7 @@ class InfinistoreConnector(RemoteConnector):
 
         #logger.debug(f"put key: {key.to_string()} done")
         self.memory_allocator.ref_count_down(memory_obj)
-        logger.debug(f"all infinistore put time {time.perf_counter() - t0}")
+        logger.debug(f"all infinistore put time {time.perf_counter() - t0}, sum {self.put_sum}")
 
 
     # TODO
