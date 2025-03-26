@@ -197,7 +197,6 @@ class LMCacheEngine:
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
             
-            print("------ process token")
             logger.info(f"processing token {key}, [{num_true} <= {len(tokens)}]")
             # if self.storage_manager.contains(key):
             #     continue

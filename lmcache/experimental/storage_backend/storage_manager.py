@@ -140,7 +140,6 @@ class StorageManager:
         #         return
         #self.manager_lock.release()
 
-        print("storage manager ________3")
         #ever_put = False
         remote_put_task = None
         for backend_name, backend in self.storage_backends.items():

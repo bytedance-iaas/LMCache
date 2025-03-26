@@ -26,7 +26,7 @@ logger = init_logger(__name__)
 
 METADATA_BYTES_LEN = 28
 
-MAX_BUFFER_CNT = 128
+MAX_BUFFER_CNT = 16
 
 
 def _get_ptr(mv: Union[bytearray, memoryview]) -> int:
@@ -50,7 +50,6 @@ class InfinistoreConnector(RemoteConnector):
 
         self.rdma_conn = infinistore.InfinityConnection(config)
 
-        self.memory_allocator = memory_allocator
         self.loop = loop
         self.rdma_conn.connect()
 
@@ -61,8 +60,6 @@ class InfinistoreConnector(RemoteConnector):
         self.recv_queue: asyncio.Queue[int] = asyncio.Queue(
             maxsize=MAX_BUFFER_CNT)
 
-        self.get_sum = 0
-        self.put_sum = 0
 
         # 1KB
         self.meta_buffer_size = 1 << 10   
@@ -81,7 +78,6 @@ class InfinistoreConnector(RemoteConnector):
             self.recv_queue.put_nowait(i)
 
     async def exists(self, key: CacheEngineKey) -> bool:
-
         def blocking_io():
             return self.rdma_conn.check_exist(key.to_string())
 
@@ -115,8 +111,6 @@ class InfinistoreConnector(RemoteConnector):
 
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
-        self.get_sum += 1
-        logger.debug(f"getting key: {key_str}, get_sum {self.get_sum}")
 
         t0 = time.perf_counter()
         #try:
@@ -145,7 +139,7 @@ class InfinistoreConnector(RemoteConnector):
         #     metadata=metadata,
         # )
 
-        size = self.get_tensor_nbytes(metadata.dtype, metadata.shape)
+        # size = self.get_tensor_nbytes(metadata.dtype, metadata.shape)
 
         # buf_idx = await self.recv_queue.get()
         # buffer = self.recv_buffers[buf_idx]
@@ -175,20 +169,20 @@ class InfinistoreConnector(RemoteConnector):
         # if metadata.fmt == MemoryFormat.BINARY_BUFFER:
         #     view = memoryview(memory_obj.byte_array)
         #     view[:metadata.length] = buffer[:size]
-    
-        logger.debug(f"get key: {key_str} done")
+
 
         memory_obj = CopyLessMemoryObj(
             raw_data=temp_tensor,
             metadata=metadata,
             callback=callback
         )
+
+        logger.debug(f"get key: {key_str} done, {memory_obj.get_shape()}")
         return memory_obj
 
     async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
 
 
-        self.put_sum += 0
         t0 = time.perf_counter()
 
         # TODO(Jiayi): The following code is ugly.
@@ -241,17 +235,17 @@ class InfinistoreConnector(RemoteConnector):
         # buf_idx = await self.send_queue.get()
         # buffer = self.send_buffers[buf_idx]
         
-        assert len(kv_bytes) <= self.buffer_size
+        #assert len(kv_bytes) <= self.buffer_size
 
-
-        # buffer[:len(kv_bytes)] = kv_bytes
 
         t2 = time.perf_counter()
-        src = np.frombuffer(kv_bytes)
-        dest = np.frombuffer(buffer)
-        dest[METADATA_BYTES_LEN:METADATA_BYTES_LEN+len(src)] = src
-        # buffer[:len(kv_bytes)] = kv_bytes
-        logger.debug(f"copy takes {time.perf_counter()- t2}, {key}")
+
+        buffer[METADATA_BYTES_LEN:METADATA_BYTES_LEN+len(kv_bytes)] = kv_bytes
+
+        # src = np.frombuffer(kv_bytes)
+        # dest = np.frombuffer(buffer)
+        # dest[METADATA_BYTES_LEN:METADATA_BYTES_LEN+len(src)] = src
+        # logger.debug(f"copy takes {time.perf_counter()- t2}, {key}")
 
 
 
@@ -277,9 +271,9 @@ class InfinistoreConnector(RemoteConnector):
             #     [(key_str + "kv_bytes", 0)], size, ptr)
             t4 = time.perf_counter()
             await self.rdma_conn.rdma_write_cache_async(
-                [(key_str, 0)], METADATA_BYTES_LEN+size, _get_ptr(buffer)
+                [(key_str, 0)], METADATA_BYTES_LEN + size, _get_ptr(buffer)
             )
-            logger.debug(f"kvcache put time {time.perf_counter() - t4}, size {size/1e6:.4f} MB, {key}")
+            # logger.debug(f"kvcache put time {time.perf_counter() - t4}, size {size/1e6:.4f} MB, {key}")
 
 
         except Exception as e:
@@ -291,7 +285,7 @@ class InfinistoreConnector(RemoteConnector):
 
         #logger.debug(f"put key: {key.to_string()} done")
         #self.memory_allocator.ref_count_down(memory_obj)
-        logger.debug(f"all infinistore put time {time.perf_counter() - t0}, {key}")
+        logger.debug(f"put key: {key.to_string()}, {memory_obj.get_shape()}")
 
 
     # TODO
