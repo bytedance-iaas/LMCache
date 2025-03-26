@@ -114,19 +114,22 @@ class StorageManager:
         Do not store if the same object is being stored (handled here by 
         storage manager) or has been stored (handled by storage backend).
         """
-        self.manager_lock.acquire()
-        if self.use_hot:
-            # During overwrite, we need to free the old memory object
-            # to avoid memory leak.
-            # NOTE(Jiayi): overwrite should not happen, at least for
-            # prefix caching
-            if key in self.hot_cache:
-                old_memory_obj = self.hot_cache.pop(key)
-                self.memory_allocator.ref_count_down(old_memory_obj)
+        # print("storage manager ________1")
+        # self.manager_lock.acquire()
+        # if self.use_hot:
+        #     # During overwrite, we need to free the old memory object
+        #     # to avoid memory leak.
+        #     # NOTE(Jiayi): overwrite should not happen, at least for
+        #     # prefix caching
+        #     if key in self.hot_cache:
+        #         old_memory_obj = self.hot_cache.pop(key)
+        #         self.memory_allocator.ref_count_down(old_memory_obj)
 
-            self.hot_cache[key] = memory_obj
-            self.memory_allocator.ref_count_up(memory_obj)
+        #     self.hot_cache[key] = memory_obj
+        #     self.memory_allocator.ref_count_up(memory_obj)
 
+        # print("storage manager ________2")
+        
         # TODO(Jiayi): currently, the entire put task will be cancelled
         # if one of the backend is already storing this cache.
         # This might not be ideal.
@@ -135,8 +138,9 @@ class StorageManager:
         #         self.memory_allocator.ref_count_down(memory_obj)
         #         self.manager_lock.release()
         #         return
-        self.manager_lock.release()
+        #self.manager_lock.release()
 
+        print("storage manager ________3")
         #ever_put = False
         remote_put_task = None
         for backend_name, backend in self.storage_backends.items():
@@ -144,9 +148,11 @@ class StorageManager:
             if backend_name == "RemoteBackend" and remote_put_task is None:
                 remote_put_task = put_task
 
-        self.manager_lock.acquire()
-        self.memory_allocator.ref_count_down(memory_obj)
-        self.manager_lock.release()
+        # print("storage manager ________4")
+        # self.manager_lock.acquire()
+        # self.memory_allocator.ref_count_down(memory_obj)
+        # self.manager_lock.release()
+        # print(f"storage manager ________5 {remote_put_task}")
         return remote_put_task
 
     @_lmcache_nvtx_annotate
@@ -200,22 +206,22 @@ class StorageManager:
         """
 
         # Search in prefetch task
-        self.manager_lock.acquire()
-        prefetch_task = self.prefetch_tasks.get(key, None)
-        self.manager_lock.release()
+        # self.manager_lock.acquire()
+        # prefetch_task = self.prefetch_tasks.get(key, None)
+        # self.manager_lock.release()
 
         # Wait until prefetch task finishes
         # Here, it is assumed all prefetch tasks load the memoryobj to
         # hot cache (pinned cpu buffer)
-        if prefetch_task is not None:
-            assert self.use_hot is True,\
-                "CPU cache must be enabled for prefetching"
-            logger.debug("Waiting for prefetching result. "
-                         "Optimally, this should not happen.")
-            # Calling result() twice (already once in callback) will have
-            # no effect
-            # Tune the timeout for better performance
-            prefetch_task.result(timeout=1)
+        # if prefetch_task is not None:
+        #     assert self.use_hot is True,\
+        #         "CPU cache must be enabled for prefetching"
+        #     logger.debug("Waiting for prefetching result. "
+        #                  "Optimally, this should not happen.")
+        #     # Calling result() twice (already once in callback) will have
+        #     # no effect
+        #     # Tune the timeout for better performance
+        #     prefetch_task.result(timeout=1)
 
         # Search in hot_cache
         self.manager_lock.acquire()

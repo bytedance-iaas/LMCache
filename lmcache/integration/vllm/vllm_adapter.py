@@ -2,7 +2,7 @@ import dataclasses
 from copy import deepcopy
 from enum import Enum
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
-
+import time
 import torch
 import torch.distributed as dist
 from torch.nn.utils.rnn import pad_sequence
@@ -645,6 +645,7 @@ def lmcache_retrieve_kv(
                 slot_mapping_req_full = slot_mapping[start_pos:end_pos]
 
             # call lmcache retrieve
+            t1 = time.perf_counter()
             ret_token_mask, seq_hidden_states = engine.retrieve(
                 full_token_tensor,
                 token_mask,
@@ -652,6 +653,7 @@ def lmcache_retrieve_kv(
                 slot_mapping=slot_mapping_req_full,
                 use_mla=engine.metadata.use_mla,
             )
+            logger.debug(f"recv time {time.perf_counter() - t1}")
             lmc_num_computed_tokens = max(
                     torch.sum(ret_token_mask).item() - \
                     (vllm_num_computed_tokens - vllm_num_computed_tokens_align),

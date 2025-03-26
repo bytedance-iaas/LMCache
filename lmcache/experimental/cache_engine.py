@@ -140,6 +140,7 @@ class LMCacheEngine:
 
     async def task(self, key, request_id: str, total: int):
         # do not know if thread-safe
+        print(f"-------------- sending zmq: {key}, {request_id}, {total}")
         logger.info(f"sending zmq: {key}, {request_id}, {total}")
         data = {"key": key, "request_id": request_id, "total": total}
         await self.socket.send_pyobj(data)
@@ -198,6 +199,7 @@ class LMCacheEngine:
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
             
+            print("------ process token")
             logger.info(f"processing token {key}, [{num_true} <= {len(tokens)}]")
             # if self.storage_manager.contains(key):
             #     continue
@@ -218,10 +220,10 @@ class LMCacheEngine:
 
             self.gpu_connector.from_gpu(memory_obj, start, end, **kwargs)
             future = self.storage_manager.put(key, memory_obj)
+
             
             # callback to inform decode to receive kvcache.
             def callback(fut, key=key, request_id=request_id, total=total, t1=time.perf_counter()):
-                
                 exc = fut.exception()
                 if exc is not None:
                     print(exc)
@@ -230,7 +232,7 @@ class LMCacheEngine:
                     fut.result()
 
                 asyncio.run_coroutine_threadsafe(self.task(key, request_id, total), self.zmq_loop)
-                logger.debug(f"Put takes {(time.perf_counter() - t1) * 1000:.6f} msec, ")
+                logger.debug(f"Put takes {(time.perf_counter() - t1) * 1000:.6f} msec, {key}")
 
             if self.metadata.is_kv_producer:
                 future.add_done_callback(callback)
@@ -279,6 +281,7 @@ class LMCacheEngine:
             asyncio.run_coroutine_threadsafe(self.task(key, request_id, total), self.zmq_loop)
         future = self.storage_manager.put(hidden_states_key, memory_obj)
         if self.metadata.is_kv_producer:
+            print(f"----------- add done callback 2")
             future.add_done_callback(callback)
 
 
@@ -307,6 +310,7 @@ class LMCacheEngine:
     def listen_zmq(self):
         while True:
             msg = self.socket.recv_pyobj()
+            print(f"++++++++++++ Received {msg}")
             logger.info(f"Received {msg}")
 
             memory_obj = self.storage_manager.get(msg.get("key"))
@@ -377,10 +381,13 @@ class LMCacheEngine:
         # to track how many tokens are retrieved and decide whether the
         # hidden states should be retrieved
         last_token_idx = 0
+        t1 = time.perf_counter()
+
         for start, end, key in self.token_database.process_tokens(
                 tokens, mask):
 
             # Get the memory object from the storage backend
+            t0 = time.perf_counter()
             memory_obj = self.storage_manager.get(key)
             
             if memory_obj is None:
@@ -401,10 +408,13 @@ class LMCacheEngine:
             # RDMA is another example.
 
             self.gpu_connector.to_gpu(memory_obj, start, end, **kwargs)
-            self.memory_allocator.ref_count_down(memory_obj)
+
+            #self.memory_allocator.ref_count_down(memory_obj)
 
         self.stats_monitor.on_retrieve_finished(monitor_req_id,
                                                 torch.sum(ret_mask))
+
+        logger.debug(f"to_gpu time {time.perf_counter() - t1}")
 
         hidden_states = self.retrieve_hidden_states(tokens) \
             if last_token_idx == len(tokens) \

@@ -207,7 +207,6 @@ class TensorMemoryObj(MemoryObj):
 
 
 class CopyLessMemoryObj(TensorMemoryObj):
-    pass
     def __init__(self, raw_data, metadata, callback):
         super().__init__(raw_data, metadata)
         self.callback = callback

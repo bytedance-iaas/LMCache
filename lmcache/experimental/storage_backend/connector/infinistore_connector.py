@@ -225,7 +225,7 @@ class InfinistoreConnector(RemoteConnector):
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str + "metadata", 0)], METADATA_BYTES_LEN, _get_ptr(buffer))
 
-            logger.debug(f"metadata put time {time.perf_counter() - t1}")
+            logger.debug(f"metadata put time {time.perf_counter() - t1} {key.chunk_hash}")
 
         except Exception as e:
             logger.warning(
@@ -249,7 +249,7 @@ class InfinistoreConnector(RemoteConnector):
         dest = np.frombuffer(buffer)
         dest[:len(src)] = src
         # buffer[:len(kv_bytes)] = kv_bytes
-        logger.debug(f"copy takes {time.perf_counter()- t2}")
+        logger.debug(f"copy takes {time.perf_counter()- t2}, {key}")
 
 
 
@@ -277,7 +277,7 @@ class InfinistoreConnector(RemoteConnector):
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str + "kv_bytes", 0)], size, _get_ptr(buffer)
             )
-            logger.debug(f"kvcache put time {time.perf_counter() - t4}, size {size/1e6:.4f} MB")
+            logger.debug(f"kvcache put time {time.perf_counter() - t4}, size {size/1e6:.4f} MB, {key}")
 
 
         except Exception as e:
@@ -285,11 +285,11 @@ class InfinistoreConnector(RemoteConnector):
                 f"exception happens in rdma_write_cache_async kv_bytes {e}")
             return
         finally:
-            await self.send_queue.put(buf_idx)
+            self.send_queue.put_nowait(buf_idx)
 
         #logger.debug(f"put key: {key.to_string()} done")
-        self.memory_allocator.ref_count_down(memory_obj)
-        logger.debug(f"all infinistore put time {time.perf_counter() - t0}, sum {self.put_sum}")
+        #self.memory_allocator.ref_count_down(memory_obj)
+        logger.debug(f"all infinistore put time {time.perf_counter() - t0}, {key}")
 
 
     # TODO
