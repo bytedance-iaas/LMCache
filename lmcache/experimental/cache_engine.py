@@ -92,7 +92,6 @@ class LMCacheEngine:
             zmq_endpoint = self.config.zmq_endpoints[self.metadata.worker_id]
             zmq_host = zmq_endpoint["addr"]
             zmq_port = zmq_endpoint["port"]
-            print(f"\n ~~~~~~ {zmq_host}   {zmq_port}")
 
         if metadata.is_kv_producer:
             context = zmq.asyncio.Context()
@@ -140,7 +139,6 @@ class LMCacheEngine:
 
     async def task(self, key, request_id: str, total: int):
         # do not know if thread-safe
-        print(f"-------------- sending zmq: {key}, {request_id}, {total}")
         logger.info(f"sending zmq: {key}, {request_id}, {total}")
         data = {"key": key, "request_id": request_id, "total": total}
         await self.socket.send_pyobj(data)
@@ -281,7 +279,6 @@ class LMCacheEngine:
             asyncio.run_coroutine_threadsafe(self.task(key, request_id, total), self.zmq_loop)
         future = self.storage_manager.put(hidden_states_key, memory_obj)
         if self.metadata.is_kv_producer:
-            print(f"----------- add done callback 2")
             future.add_done_callback(callback)
 
 
@@ -310,7 +307,6 @@ class LMCacheEngine:
     def listen_zmq(self):
         while True:
             msg = self.socket.recv_pyobj()
-            print(f"++++++++++++ Received {msg}")
             logger.info(f"Received {msg}")
 
             memory_obj = self.storage_manager.get(msg.get("key"))

@@ -83,7 +83,7 @@ class InfinistoreConnector(RemoteConnector):
     async def exists(self, key: CacheEngineKey) -> bool:
 
         def blocking_io():
-            return self.rdma_conn.check_exist(key.to_string() + "metadata")
+            return self.rdma_conn.check_exist(key.to_string())
 
         return await self.loop.run_in_executor(None, blocking_io)
 
@@ -119,18 +119,20 @@ class InfinistoreConnector(RemoteConnector):
         logger.debug(f"getting key: {key_str}, get_sum {self.get_sum}")
 
         t0 = time.perf_counter()
-        try:
-            buf_idx = await self.recv_queue.get()
-            buffer = self.recv_buffers[buf_idx]
-            await self.rdma_conn.rdma_read_cache_async(
-                [(key_str + "metadata", 0)], METADATA_BYTES_LEN, _get_ptr(buffer))
+        #try:
 
-            metadata = RedisMetadata.deserialize(buffer)
 
-        finally:
-            self.recv_queue.put_nowait(buf_idx)
+        buf_idx = await self.recv_queue.get()
+        buffer = self.recv_buffers[buf_idx]
+        await self.rdma_conn.rdma_read_cache_async(
+            [(key_str , 0)], self.buffer_size, _get_ptr(buffer))
 
-        print(f"meta get time {time.perf_counter() - t0}")
+        metadata = RedisMetadata.deserialize(buffer)
+
+        # finally:
+        #     self.recv_queue.put_nowait(buf_idx)
+
+        #print(f"meta get time {time.perf_counter() - t0}")
 
         # memory_obj = self.memory_allocator.allocate(
         #     metadata.shape,
@@ -145,30 +147,30 @@ class InfinistoreConnector(RemoteConnector):
 
         size = self.get_tensor_nbytes(metadata.dtype, metadata.shape)
 
-        buf_idx = await self.recv_queue.get()
-        buffer = self.recv_buffers[buf_idx]
-        try:
-            # await self.loop.run_in_executor(None, self.rdma_conn.register_mr,
-            #                                 ptr, size)
-            # await self.rdma_conn.rdma_read_cache_async(
-            #     [(key_str + "kv_bytes", 0)], size, ptr)
-            t1 = time.perf_counter()
-            await self.rdma_conn.rdma_read_cache_async(
-                [(key_str + "kv_bytes", 0)], size, _get_ptr(buffer))
-            print(f"core get time {time.perf_counter() - t1}")
-        except Exception as e:
-            logger.warning(f"get kv_bytes failed: {e}")
-            return None
-        # finally:
+        # buf_idx = await self.recv_queue.get()
+        # buffer = self.recv_buffers[buf_idx]
+        #try:
+        #     # await self.loop.run_in_executor(None, self.rdma_conn.register_mr,
+        #     #                                 ptr, size)
+        #     # await self.rdma_conn.rdma_read_cache_async(
+        #     #     [(key_str + "kv_bytes", 0)], size, ptr)
+        #     t1 = time.perf_counter()
+        #     await self.rdma_conn.rdma_read_cache_async(
+        #         [(key_str + "kv_bytes", 0)], size, _get_ptr(buffer))
+        #     print(f"core get time {time.perf_counter() - t1}")
+        # except Exception as e:
+        #     logger.warning(f"get kv_bytes failed: {e}")
+        #     return None
+        # # finally:
         #     await self.recv_queue.put(buf_idx)
 
         def callback():
             self.recv_queue.put_nowait(buf_idx)
 
-        t2 = time.perf_counter()
+        #t2 = time.perf_counter()
         num_elements = reduce(operator.mul, metadata.shape)
-        temp_tensor = torch.frombuffer(buffer, dtype=metadata.dtype, offset=0, count=num_elements).reshape(metadata.shape)
-        print(f"memory copy time {time.perf_counter() - t2}")
+        temp_tensor = torch.frombuffer(buffer, dtype=metadata.dtype, offset=METADATA_BYTES_LEN, count=num_elements).reshape(metadata.shape)
+        #print(f"memory copy time {time.perf_counter() - t2}")
 
         # if metadata.fmt == MemoryFormat.BINARY_BUFFER:
         #     view = memoryview(memory_obj.byte_array)
@@ -219,18 +221,18 @@ class InfinistoreConnector(RemoteConnector):
         # dest[:len(src)] = src
 
 
-        try:
-            t1 = time.perf_counter()
+        # try:
+        #     t1 = time.perf_counter()
 
-            await self.rdma_conn.rdma_write_cache_async(
-                [(key_str + "metadata", 0)], METADATA_BYTES_LEN, _get_ptr(buffer))
+        #     await self.rdma_conn.rdma_write_cache_async(
+        #         [(key_str + "metadata", 0)], METADATA_BYTES_LEN, _get_ptr(buffer))
 
-            logger.debug(f"metadata put time {time.perf_counter() - t1} {key.chunk_hash}")
+        #     logger.debug(f"metadata put time {time.perf_counter() - t1} {key.chunk_hash}")
 
-        except Exception as e:
-            logger.warning(
-                f"exception happens in rdma_write_cache_async metadata {e}")
-            return
+        # except Exception as e:
+        #     logger.warning(
+        #         f"exception happens in rdma_write_cache_async metadata {e}")
+        #     return
         # finally:
         #     self.send_queue.put_nowait(buf_idx)
 
@@ -247,7 +249,7 @@ class InfinistoreConnector(RemoteConnector):
         t2 = time.perf_counter()
         src = np.frombuffer(kv_bytes)
         dest = np.frombuffer(buffer)
-        dest[:len(src)] = src
+        dest[METADATA_BYTES_LEN:METADATA_BYTES_LEN+len(src)] = src
         # buffer[:len(kv_bytes)] = kv_bytes
         logger.debug(f"copy takes {time.perf_counter()- t2}, {key}")
 
@@ -275,7 +277,7 @@ class InfinistoreConnector(RemoteConnector):
             #     [(key_str + "kv_bytes", 0)], size, ptr)
             t4 = time.perf_counter()
             await self.rdma_conn.rdma_write_cache_async(
-                [(key_str + "kv_bytes", 0)], size, _get_ptr(buffer)
+                [(key_str, 0)], METADATA_BYTES_LEN+size, _get_ptr(buffer)
             )
             logger.debug(f"kvcache put time {time.perf_counter() - t4}, size {size/1e6:.4f} MB, {key}")
 
