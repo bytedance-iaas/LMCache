@@ -1,17 +1,15 @@
 import asyncio
 import ctypes
+import operator
+from functools import reduce
 from typing import List, Optional, Union, no_type_check
 
 import infinistore
 import torch
-import operator
-import numpy as np
 
-from functools import reduce
-
-from lmcache.experimental.memory_management import (MemoryAllocatorInterface,
-                                                    MemoryObj,
-                                                    CopyLessMemoryObj)
+from lmcache.experimental.memory_management import (CopyLessMemoryObj,
+                                                    MemoryAllocatorInterface,
+                                                    MemoryObj)
 # reuse
 from lmcache.experimental.protocol import RedisMetadata
 from lmcache.experimental.storage_backend.connector.base_connector import \
@@ -21,8 +19,8 @@ from lmcache.utils import CacheEngineKey
 
 logger = init_logger(__name__)
 
+MAX_BUFFER_SIZE = 40 << 20  # 40MB
 METADATA_BYTES_LEN = 28
-
 MAX_BUFFER_CNT = 16
 
 
@@ -57,8 +55,7 @@ class InfinistoreConnector(RemoteConnector):
         self.recv_queue: asyncio.Queue[int] = asyncio.Queue(
             maxsize=MAX_BUFFER_CNT)
 
-        # 40MB
-        self.buffer_size = 40 << 20
+        self.buffer_size = MAX_BUFFER_SIZE
         for i in range(MAX_BUFFER_CNT):
             send_buffer = bytearray(self.buffer_size)
             self.rdma_conn.register_mr(_get_ptr(send_buffer), self.buffer_size)
@@ -130,11 +127,12 @@ class InfinistoreConnector(RemoteConnector):
                len(kv_bytes)] = kv_bytes
 
         size = memory_obj.get_size()
-        if size + METADATA_BYTES_LEN > (40 << 20):
-            raise Exception(
-                f"value is bigger than hard coded 40MB, please decrease chunk_size"
-            )
 
+        if size + METADATA_BYTES_LEN > self.buffer_size:
+            raise ValueError(
+                f"Value size ({size + METADATA_BYTES_LEN} bytes)"
+                f"exceeds the maximum allowed size"
+                f"({self.buffer_size} bytes). Please decrease chunk_size.")
         try:
             await self.rdma_conn.rdma_write_cache_async(
                 [(key_str, 0)], METADATA_BYTES_LEN + size, _get_ptr(buffer))
