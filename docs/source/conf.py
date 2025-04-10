@@ -28,7 +28,11 @@ extensions = [
     "sphinx.ext.githubpages",
     "sphinx.ext.viewcode",
     "sphinx.ext.napoleon",
+    "sphinx_copybutton",
 ]
+
+copybutton_prompt_text = r"^(\$ |>>> |\# )"
+copybutton_prompt_is_regexp = True
 
 
 class MockedClassDocumenter(autodoc.ClassDocumenter):
@@ -51,6 +55,7 @@ autodoc.ClassDocumenter = MockedClassDocumenter
 
 templates_path = ["_templates"]
 exclude_patterns = []
+add_module_names = False
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output

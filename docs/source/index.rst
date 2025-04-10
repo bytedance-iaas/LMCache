@@ -9,11 +9,18 @@
 Welcome to LMCache!
 =====================
 
-.. figure:: https://people.cs.uchicago.edu/~junchenj/docs/lmcache-logo.png
+.. figure:: ./assets/lmcache-logo_crop.png
   :width: 60%
   :align: center
   :alt: LMCache
   :class: no-scaled-link
+
+.. raw:: html
+
+   <p style="text-align:center; font-size:24px;">
+   <strong> Redis for LLMs. </strong>
+   </p>
+
 
 .. raw:: html
 
@@ -56,6 +63,7 @@ Documentation
    getting_started/speedup
    getting_started/installation   
    getting_started/docker
+   getting_started/quickstart
 
 .. toctree::
    :maxdepth: 2
@@ -82,16 +90,18 @@ Documentation
    :caption: Developer Documentation
 
    developer_tutorial/overview
-   developer_tutorial/LLM_Engine
-   developer_tutorial/LMCache_Engine
-   developer_tutorial/LMCache_Backend
+   developer_tutorial/EngineInterface
+   developer_tutorial/GPUConnectorInterface
+   developer_tutorial/MemoryObject
+   developer_tutorial/MemoryInterface
+   developer_tutorial/BackendInterface
+
 
 .. toctree::
    :maxdepth: 1
    :caption: Advanced
 
-   advanced/lmcache.blend
-   advanced/lmcache.server
-   advanced/lmcache.storage_backend
-   advanced/lmcache.experimental
-   advanced/lmcache.integration
+   advanced/KVBlend
+   advanced/KVEvictor
+   advanced/vLLMIntegration
+
