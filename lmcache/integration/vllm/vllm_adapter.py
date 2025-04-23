@@ -10,12 +10,13 @@ from torch.nn.utils.rnn import pad_sequence
 if TYPE_CHECKING:
     from vllm.worker.model_runner import ModelInputForGPUWithSamplingMetadata
 
+from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.attention.backends.flashmla import FlashMLAMetadata
 from vllm.attention.backends.mla.common import MLACommonMetadata
-from vllm.config import CacheConfig, ModelConfig, ParallelConfig
+from vllm.config import CacheConfig, ModelConfig, ParallelConfig, SchedulerConfig
 from vllm.sequence import IntermediateTensors
-from vllm.utils import get_kv_cache_torch_dtype
+from vllm.utils import get_kv_cache_torch_dtype, cdiv, round_down
 
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.cache_engine import (LMCacheEngine,
@@ -38,6 +39,10 @@ LMCACHE_CUDA_STREAM = torch.cuda.Stream()
 SUPPORTED_BACKEND_METADATA = (FlashAttentionMetadata, FlashMLAMetadata,
                               MLACommonMetadata)
 
+VLLM_CACHE_CONFIG: Optional[CacheConfig] = None
+VLLM_MODEL_CONFIG: Optional[ModelConfig] = None
+VLLM_PARALLEL_CONFIG: Optional[ParallelConfig] = None
+VLLM_SCHEDULER_CONFIG: Optional[SchedulerConfig] = None
 
 class StoreStatus(Enum):
     PREFILL = 1
@@ -59,6 +64,7 @@ def init_lmcache_engine(
     model_config: ModelConfig,
     parallel_config: ParallelConfig,
     cache_config: CacheConfig,
+    scheduler_config: SchedulerConfig,
 ) -> Optional[LMCacheEngine]:
     """Initialize the LMCache engine by the given model config and parallel 
     config. This function will check the environment variable 
@@ -71,6 +77,8 @@ def init_lmcache_engine(
     :type parallel_config: ParallelConfig
     :param cache_config: The KV cache configuration in vLLM.
     :type cache_config: CacheConfig
+    :param scheduler_config: The scheduler configuration in vLLM.
+    :type scheduler_config: SchedulerConfig
 
     :return: The initialized LMCache engine or None (if the environment variable
         `LMCACHE_CONFIG_FILE` is not set).
@@ -78,6 +86,15 @@ def init_lmcache_engine(
     """
     if LMCacheEngineBuilder.get(ENGINE_NAME) is not None:
         return None
+
+    global VLLM_CACHE_CONFIG
+    global VLLM_PARALLEL_CONFIG
+    global VLLM_MODEL_CONFIG
+    global VLLM_SCHEDULER_CONFIG
+    VLLM_CACHE_CONFIG = cache_config
+    VLLM_PARALLEL_CONFIG = parallel_config
+    VLLM_MODEL_CONFIG = model_config
+    VLLM_SCHEDULER_CONFIG = scheduler_config
 
     config = lmcache_get_config()
 
@@ -834,6 +851,12 @@ def build_partial_prefill_input(
     ).to(device)
 
     rebuilt_attn_metadata._cached_prefill_metadata = None
+
+    # New for MLA(compared to FlashAttentionMetadata)
+    if isinstance(rebuilt_attn_metadata, MLACommonMetadata) \
+        or isinstance(rebuilt_attn_metadata, FlashMLAMetadata):
+        build_context_chunk_params(rebuilt_attn_metadata, device)
+
     rebuilt_sampling_metadata = None
     # rebuilt sampling_metadata
     if model_input.sampling_metadata is not None:
@@ -869,3 +892,72 @@ def build_partial_prefill_input(
     )
 
     return rebuilt_model_input
+
+def build_context_chunk_params(attention_mata: "AttentionMetadata",
+                               device: torch.device) -> None:
+    assert VLLM_CACHE_CONFIG is not None
+    assert VLLM_MODEL_CONFIG is not None
+    assert VLLM_SCHEDULER_CONFIG is not None
+    context_chunk_workspace_size = min(
+        # Max sure there is enough for 8 full length request or at least
+        # 4 pages of cache per request
+        max(
+            8 * VLLM_MODEL_CONFIG.max_model_len,
+            4 * VLLM_SCHEDULER_CONFIG.max_num_seqs * VLLM_CACHE_CONFIG.block_size),
+        # For long-context models try not to over-allocate limiting
+        # kv-cache space, limiting it to 64k tokens,
+        # which would result in the workspace being:
+        #   2*(576)*(64*1024) = 144mb
+        # (assuming 576 MLA head dim, and fp16)
+        # which would result in up-projected context being
+        #   2*(192*128)*(64*1024) = 3gb
+        # (assuming 192 QK head dim, 128 heads, and fp16)
+        128 * 1024)
+
+    context_chunk_cu_seq_lens = None
+    context_chunk_starts = None
+    context_chunk_seq_tot = None
+    context_chunk_max_seq_lens = None
+
+    num_prefills = attention_mata.num_prefills
+    context_lens_tensor = attention_mata.context_lens_tensor
+    if num_prefills > 0 \
+        and context_lens_tensor is not None \
+        and context_lens_tensor[:num_prefills].max() > 0:
+        num_prefills_with_context = \
+            (context_lens_tensor[:num_prefills] > 0).sum().item()
+
+        max_context_chunk = \
+            context_chunk_workspace_size // num_prefills_with_context
+
+        max_context_chunk = round_down(max_context_chunk, VLLM_CACHE_CONFIG.block_size)
+        assert max_context_chunk > 0
+        num_chunks = cdiv(context_lens_tensor.max(), max_context_chunk)
+
+        context_chunk_starts = \
+            torch.arange(num_chunks, device=device, dtype=torch.int32) \
+                .unsqueeze(1).expand(-1, num_prefills) \
+            * max_context_chunk
+        chunk_ends = torch.min(context_lens_tensor[:num_prefills] \
+                               .unsqueeze(0), context_chunk_starts + max_context_chunk)
+        chunk_seq_lens = (chunk_ends - context_chunk_starts).clamp(min=0)
+        _context_chunk_cu_seq_lens = chunk_seq_lens.cumsum(dim=1).to(
+            torch.int32)
+        zero = torch.zeros(num_chunks, dtype=torch.int32, device=device) \
+            .unsqueeze(-1)
+        context_chunk_cu_seq_lens = torch.cat([zero, _context_chunk_cu_seq_lens], dim=1)
+        context_chunk_max_seq_lens = chunk_seq_lens.max(dim=1).values.tolist()
+        context_chunk_seq_tot = chunk_seq_lens.sum(dim=1).tolist()
+        assert max(context_chunk_seq_tot) <= context_chunk_workspace_size
+
+    attention_mata.context_chunk_seq_tot = context_chunk_seq_tot
+    attention_mata.context_chunk_cu_seq_lens = context_chunk_cu_seq_lens
+    attention_mata.context_chunk_starts = context_chunk_starts
+    attention_mata.context_chunk_max_seq_lens = context_chunk_max_seq_lens
+
+    if attention_mata.context_chunk_workspace is None:
+        attention_mata.context_chunk_workspace = torch.empty(
+            (context_chunk_workspace_size, VLLM_MODEL_CONFIG.get_head_size()),
+            dtype=VLLM_MODEL_CONFIG.dtype,
+            device=device,
+        )
