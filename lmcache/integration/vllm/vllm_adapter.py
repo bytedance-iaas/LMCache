@@ -715,12 +715,6 @@ def lmcache_retrieve_kv(
     assert len(lmc_num_computed_tokens_list) == seq_cnt
     assert len(num_computed_tokens_list) == seq_cnt
 
-    is_all_prefill = all(
-        [status == RetrieveStatus.PREFILL for status in retrieve_status])
-
-    if is_all_prefill and num_request_not_found == 0:
-        return model_input, False, None
-
     is_all_chunk_prefill = all(
         [status == RetrieveStatus.CHUNK_PREFILL for status in retrieve_status])
 
