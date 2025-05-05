@@ -14,9 +14,10 @@ from vllm.attention import AttentionMetadata
 from vllm.attention.backends.flash_attn import FlashAttentionMetadata
 from vllm.attention.backends.flashmla import FlashMLAMetadata
 from vllm.attention.backends.mla.common import MLACommonMetadata
-from vllm.config import CacheConfig, ModelConfig, ParallelConfig, SchedulerConfig
+from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
+                         SchedulerConfig)
 from vllm.sequence import IntermediateTensors
-from vllm.utils import get_kv_cache_torch_dtype, cdiv, round_down
+from vllm.utils import cdiv, get_kv_cache_torch_dtype, round_down
 
 from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.cache_engine import (LMCacheEngine,
@@ -43,6 +44,7 @@ VLLM_CACHE_CONFIG: Optional[CacheConfig] = None
 VLLM_MODEL_CONFIG: Optional[ModelConfig] = None
 VLLM_PARALLEL_CONFIG: Optional[ParallelConfig] = None
 VLLM_SCHEDULER_CONFIG: Optional[SchedulerConfig] = None
+
 
 class StoreStatus(Enum):
     PREFILL = 1
@@ -140,11 +142,11 @@ def init_lmcache_engine(
 
     if use_mla:
         vllm_gpu_connector = VLLMPagedMemGPUConnectorMLA(head_size,
-                                                        num_layer,
-                                                        use_gpu=use_gpu,
-                                                        chunk_size=chunk_size,
-                                                        dtype=kv_dtype,
-                                                        device=device)
+                                                         num_layer,
+                                                         use_gpu=use_gpu,
+                                                         chunk_size=chunk_size,
+                                                         dtype=kv_dtype,
+                                                         device=device)
     else:
         hidden_dim_size = num_kv_head * head_size
         vllm_gpu_connector = VLLMPagedMemGPUConnectorV2(hidden_dim_size,
@@ -903,6 +905,7 @@ def build_partial_prefill_input(
 
     return rebuilt_model_input
 
+
 def build_context_chunk_params(attention_mata: "AttentionMetadata",
                                device: torch.device) -> None:
     assert VLLM_CACHE_CONFIG is not None
@@ -912,8 +915,8 @@ def build_context_chunk_params(attention_mata: "AttentionMetadata",
         # Max sure there is enough for 8 full length request or at least
         # 4 pages of cache per request
         max(
-            8 * VLLM_MODEL_CONFIG.max_model_len,
-            4 * VLLM_SCHEDULER_CONFIG.max_num_seqs * VLLM_CACHE_CONFIG.block_size),
+            8 * VLLM_MODEL_CONFIG.max_model_len, 4 *
+            VLLM_SCHEDULER_CONFIG.max_num_seqs * VLLM_CACHE_CONFIG.block_size),
         # For long-context models try not to over-allocate limiting
         # kv-cache space, limiting it to 64k tokens,
         # which would result in the workspace being:
@@ -940,7 +943,8 @@ def build_context_chunk_params(attention_mata: "AttentionMetadata",
         max_context_chunk = \
             context_chunk_workspace_size // num_prefills_with_context
 
-        max_context_chunk = round_down(max_context_chunk, VLLM_CACHE_CONFIG.block_size)
+        max_context_chunk = round_down(max_context_chunk,
+                                       VLLM_CACHE_CONFIG.block_size)
         assert max_context_chunk > 0
         num_chunks = cdiv(context_lens_tensor.max(), max_context_chunk)
 
@@ -949,13 +953,14 @@ def build_context_chunk_params(attention_mata: "AttentionMetadata",
                 .unsqueeze(1).expand(-1, num_prefills) \
             * max_context_chunk
         chunk_ends = torch.min(context_lens_tensor[:num_prefills] \
-                               .unsqueeze(0), context_chunk_starts + max_context_chunk)
+                 .unsqueeze(0), context_chunk_starts + max_context_chunk)
         chunk_seq_lens = (chunk_ends - context_chunk_starts).clamp(min=0)
         _context_chunk_cu_seq_lens = chunk_seq_lens.cumsum(dim=1).to(
             torch.int32)
         zero = torch.zeros(num_chunks, dtype=torch.int32, device=device) \
             .unsqueeze(-1)
-        context_chunk_cu_seq_lens = torch.cat([zero, _context_chunk_cu_seq_lens], dim=1)
+        context_chunk_cu_seq_lens = torch.cat(
+            [zero, _context_chunk_cu_seq_lens], dim=1)
         context_chunk_max_seq_lens = chunk_seq_lens.max(dim=1).values.tolist()
         context_chunk_seq_tot = chunk_seq_lens.sum(dim=1).tolist()
         assert max(context_chunk_seq_tot) <= context_chunk_workspace_size

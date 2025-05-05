@@ -313,7 +313,7 @@ class LMCacheConnectorV1Impl:
         else:
             self.lmcache_engine = init_lmcache_engine(
                 vllm_config.model_config, vllm_config.parallel_config,
-                vllm_config.cache_config)
+                vllm_config.cache_config, vllm_config.scheduler_config)
             # NOTE: Only create the KV lookup API server on worker rank 0
             # when there are multiple workers
             assert self.lmcache_engine is not None
