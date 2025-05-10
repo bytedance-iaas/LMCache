@@ -812,10 +812,12 @@ def build_partial_prefill_input(
     for idx in range(len(full_tokens_list)):
         token_tensor = full_tokens_list[idx]
         num_token = len(token_tensor)
-        num_computed_token = num_computed_tokens_list[idx]
+        num_computed_token = num_computed_tokens_list[
+            idx] // cache_config.block_size * cache_config.block_size
         start_pos = start_pos_list[idx]
         is_prefill = is_prefill_list[idx]
-        lmc_num_computed_tokens = lmc_num_computed_tokens_list[idx]
+        lmc_num_computed_tokens = lmc_num_computed_tokens_list[
+            idx] // cache_config.block_size * cache_config.block_size
         rebuilt_input_tokens.append(token_tensor[num_computed_token:])
         q_len = num_token - num_computed_token
         assert q_len > 0

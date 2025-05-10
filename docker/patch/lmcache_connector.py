@@ -68,7 +68,6 @@ class LMCacheConnector(KVConnectorBase):
                "ModelInputForGPUWithSamplingMetadata"]:
 
         hidden_or_intermediate_states = None
-        old_model_input = model_input
 
         # TODO (Jiayi): Need to support chunked prefill
         retrieve_status = self.lmcache_should_retrieve(model_input)
@@ -77,10 +76,6 @@ class LMCacheConnector(KVConnectorBase):
             self.lmcache_retrieve_kv(
                 model_executable, model_input, self.cache_config, kv_caches,
                 retrieve_status)
-
-        if hidden_or_intermediate_states is None:
-            bypass_model_exec = False
-            model_input = old_model_input
 
         return hidden_or_intermediate_states, bypass_model_exec, model_input
 
