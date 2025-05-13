@@ -850,7 +850,7 @@ def build_partial_prefill_input(
         else:
             slot_mapping_req = slot_mapping_flat[start_pos:end_slot_idx]
             vllm_block_size = cache_config.block_size
-            rebuilt_block_table = slot_mapping_req[::16].to(torch.int32) \
+            rebuilt_block_table = slot_mapping_req[::vllm_block_size].to(torch.int32) \
                 // vllm_block_size
             rebuilt_block_tables.append(rebuilt_block_table)
 
@@ -880,10 +880,18 @@ def build_partial_prefill_input(
 
     rebuilt_attn_metadata._cached_prefill_metadata = None
 
-    # New for MLA(compared to FlashAttentionMetadata)
     if isinstance(rebuilt_attn_metadata, MLACommonMetadata) \
         or isinstance(rebuilt_attn_metadata, FlashMLAMetadata):
-        build_context_chunk_params(rebuilt_attn_metadata, device)
+        # use mla
+        rebuilt_input_positions_tensor = torch.cat(rebuilt_input_positions).to(
+            device=device,
+            dtype=model_input.attn_metadata.input_positions.dtype)
+        # New for MLA(compared to FlashAttentionMetadata)
+        build_mla_params(rebuilt_attn_metadata, device,
+                         rebuilt_input_positions_tensor)
+    else:
+        rebuilt_input_positions_tensor = torch.cat(rebuilt_input_positions).to(
+            device=device, dtype=model_input.input_positions.dtype)
 
     rebuilt_sampling_metadata = None
     # rebuilt sampling_metadata
@@ -902,7 +910,7 @@ def build_partial_prefill_input(
     from vllm.worker.model_runner import ModelInputForGPUWithSamplingMetadata
     rebuilt_model_input = ModelInputForGPUWithSamplingMetadata(
         input_tokens=torch.cat(rebuilt_input_tokens).to(device),
-        input_positions=torch.cat(rebuilt_input_positions).to(device),
+        input_positions=rebuilt_input_positions_tensor,
         seq_lens=model_input.seq_lens,
         query_lens=rebuilt_query_lens,
         lora_mapping=model_input.lora_mapping,
@@ -922,11 +930,14 @@ def build_partial_prefill_input(
     return rebuilt_model_input
 
 
-def build_context_chunk_params(attention_mata: "AttentionMetadata",
-                               device: torch.device) -> None:
+def build_mla_params(attention_mata: "AttentionMetadata", device: torch.device,
+                     input_positions_tensor: torch.Tensor) -> None:
     assert VLLM_CACHE_CONFIG is not None
     assert VLLM_MODEL_CONFIG is not None
     assert VLLM_SCHEDULER_CONFIG is not None
+    assert VLLM_PARALLEL_CONFIG is not None
+
+    # set context chunk params
     context_chunk_workspace_size = min(
         # Max sure there is enough for 8 full length request or at least
         # 4 pages of cache per request
@@ -992,3 +1003,18 @@ def build_context_chunk_params(attention_mata: "AttentionMetadata",
             dtype=VLLM_MODEL_CONFIG.dtype,
             device=device,
         )
+
+    # set decode params
+    if attention_mata.num_decode_tokens > 0:
+        from vllm.attention.ops.flashmla import get_mla_metadata
+        num_q_heads = VLLM_MODEL_CONFIG.get_num_attention_heads(
+            VLLM_PARALLEL_CONFIG)
+        attention_mata.decode_tile_scheduler_metadata, attention_mata.decode_num_splits = \
+            get_mla_metadata(
+                attention_mata.seq_lens_tensor[num_prefills:],
+                num_q_heads,
+                1,  # MQA for the decode path
+            )
+
+    # set input positions
+    attention_mata.input_positions = input_positions_tensor
