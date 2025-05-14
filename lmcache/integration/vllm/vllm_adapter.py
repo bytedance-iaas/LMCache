@@ -164,7 +164,7 @@ def init_lmcache_engine(
 
     if use_mla:
         if use_layerwise:
-            raise ValueError("layereise MLA connector is not supported yet")
+            raise ValueError("layerwise MLA connector is not supported yet")
         vllm_gpu_connector = VLLMPagedMemGPUConnectorMLA(head_size,
                                                          num_layer,
                                                          use_gpu=use_gpu,
