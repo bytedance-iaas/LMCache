@@ -326,7 +326,8 @@ def test_multi_layer_kernel_use_mla(num_tokens):
     print("New extract time: ", elapsed_time_ms / 1000)
 
     for left_mem_obj, right_mem_obj in zip(memory_obj_old_list,
-                                           memory_obj_new_list):
+                                           memory_obj_new_list,
+                                           strict=False):
         left_kv, right_kv = left_mem_obj.tensor[0], right_mem_obj.tensor[0]
         right_kv = right_kv.to(left_kv.device)
 
@@ -353,7 +354,7 @@ def test_multi_layer_kernel_use_mla(num_tokens):
                                         slot_mapping_temp,
                                         kv_cache_new[0].device, 0, False, True)
 
-    for left_kv, right_kv in zip(kv_cache, kv_cache_new):
+    for left_kv, right_kv in zip(kv_cache, kv_cache_new, strict=False):
 
         assert len(left_kv.shape) == 3
         assert len(right_kv.shape) == 3
@@ -365,7 +366,8 @@ def test_multi_layer_kernel_use_mla(num_tokens):
 
         assert (left_reshaped[slot_mapping, :] == right_reshaped[
             slot_mapping, :]).all()
-        
+
+
 @pytest.mark.parametrize("num_tokens", [256, 500, 1024, 8000])
 def test_single_layer_kernel(num_tokens):
     device = "cuda"

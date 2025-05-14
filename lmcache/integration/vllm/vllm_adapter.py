@@ -38,10 +38,9 @@ from lmcache.config import LMCacheEngineMetadata
 from lmcache.experimental.cache_engine import (LMCacheEngine,
                                                LMCacheEngineBuilder)
 from lmcache.experimental.config import LMCacheEngineConfig
-from lmcache.experimental.gpu_connector import (GPUConnectorInterface,
-                                                VLLMPagedMemGPUConnectorMLA,
-                                                VLLMPagedMemGPUConnectorV2,
-                                                VLLMPagedMemLayerwiseGPUConnector)
+from lmcache.experimental.gpu_connector import (
+    VLLMPagedMemGPUConnectorMLA, VLLMPagedMemGPUConnectorV2,
+    VLLMPagedMemLayerwiseGPUConnector)
 from lmcache.integration.vllm.utils import ENGINE_NAME, lmcache_get_config
 from lmcache.logging import init_logger
 from lmcache.utils import _lmcache_nvtx_annotate
@@ -153,14 +152,19 @@ def init_lmcache_engine(
                                      parallel_config.world_size,
                                      parallel_config.rank, "vllm", kv_dtype,
                                      kv_shape)
-    vllm_gpu_connector: GPUConnectorInterface
-    use_gpu = need_gpu_interm_buffer(config)
 
+    use_gpu = need_gpu_interm_buffer(config)
     vllm_gpu_connector: Union[VLLMPagedMemGPUConnectorV2,
                               VLLMPagedMemLayerwiseGPUConnector,
                               VLLMPagedMemGPUConnectorMLA]
 
+    # FIXME(Jiayi): support non-environ config
+    env_layerwise = os.getenv("LMCACHE_USE_LAYERWISE", "False")
+    use_layerwise = env_layerwise.lower() in ["true", "1"]
+
     if use_mla:
+        if use_layerwise:
+            raise ValueError("layereise MLA connector is not supported yet")
         vllm_gpu_connector = VLLMPagedMemGPUConnectorMLA(head_size,
                                                          num_layer,
                                                          use_gpu=use_gpu,
@@ -169,11 +173,6 @@ def init_lmcache_engine(
                                                          device=device)
     else:
         hidden_dim_size = num_kv_head * head_size
-
-
-        # FIXME(Jiayi): support non-environ config
-        env_layerwise = os.getenv("LMCACHE_USE_LAYERWISE", "False")
-        use_layerwise = env_layerwise.lower() in ["true", "1"]
 
         if use_layerwise:
             vllm_gpu_connector = VLLMPagedMemLayerwiseGPUConnector(
@@ -184,12 +183,13 @@ def init_lmcache_engine(
                 dtype=kv_dtype,
                 device=device)
         else:
-            vllm_gpu_connector = VLLMPagedMemGPUConnectorV2(hidden_dim_size,
-                                                            num_layer,
-                                                            use_gpu=use_gpu,
-                                                            chunk_size=chunk_size,
-                                                            dtype=kv_dtype,
-                                                            device=device)
+            vllm_gpu_connector = VLLMPagedMemGPUConnectorV2(
+                hidden_dim_size,
+                num_layer,
+                use_gpu=use_gpu,
+                chunk_size=chunk_size,
+                dtype=kv_dtype,
+                device=device)
     engine = LMCacheEngineBuilder.get_or_create(ENGINE_NAME, config, metadata,
                                                 vllm_gpu_connector,
                                                 use_layerwise)
@@ -872,8 +872,8 @@ def build_partial_prefill_input(
         else:
             slot_mapping_req = slot_mapping_flat[start_pos:end_slot_idx]
             vllm_block_size = cache_config.block_size
-            rebuilt_block_table = slot_mapping_req[::vllm_block_size].to(torch.int32) \
-                // vllm_block_size
+            rebuilt_block_table = slot_mapping_req[::vllm_block_size].to(
+                torch.int32) // vllm_block_size
             rebuilt_block_tables.append(rebuilt_block_table)
 
         # Sampling metadata related
@@ -1031,12 +1031,12 @@ def build_mla_params(attention_mata: "AttentionMetadata", device: torch.device,
         from vllm.attention.ops.flashmla import get_mla_metadata
         num_q_heads = VLLM_MODEL_CONFIG.get_num_attention_heads(
             VLLM_PARALLEL_CONFIG)
-        attention_mata.decode_tile_scheduler_metadata, attention_mata.decode_num_splits = \
-            get_mla_metadata(
-                attention_mata.seq_lens_tensor[num_prefills:],
-                num_q_heads,
-                1,  # MQA for the decode path
-            )
+        attention_mata.decode_tile_scheduler_metadata, \
+        attention_mata.decode_num_splits = get_mla_metadata(
+            attention_mata.seq_lens_tensor[num_prefills:],
+            num_q_heads,
+            1,  # MQA for the decode path
+        )
 
     # set input positions
     attention_mata.input_positions = input_positions_tensor

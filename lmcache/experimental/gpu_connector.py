@@ -449,6 +449,7 @@ class VLLMPagedMemGPUConnectorV2(GPUConnectorInterface):
         return torch.Size(
             [2, self.num_layers, num_tokens, self.hidden_dim_size])
 
+
 class VLLMPagedMemLayerwiseGPUConnector(GPUConnectorInterface):
     """
     """
@@ -676,6 +677,7 @@ class VLLMPagedMemLayerwiseGPUConnector(GPUConnectorInterface):
     def get_shape(self, num_tokens: int) -> torch.Size:
         return torch.Size([num_tokens, 2, self.hidden_dim_size])
 
+
 class VLLMPagedMemGPUConnectorMLA(GPUConnectorInterface):
     """
     The GPU KV cache should be list of tensors, one for each layer
@@ -743,9 +745,9 @@ class VLLMPagedMemGPUConnectorMLA(GPUConnectorInterface):
         """
         assert memory_obj.tensor is not None
 
-        if memory_obj.metadata.fmt != MemoryFormat.KV_BLOB:
+        if memory_obj.metadata.fmt != MemoryFormat.KV_2LTD:
             raise ValueError(
-                "The memory object should be in KV_BLOB format in"
+                "The memory object should be in KV_2LTD format in"
                 " order to be processed by VLLMPagedMemGPUConnector")
 
         if "kvcaches" not in kwargs:
@@ -772,7 +774,7 @@ class VLLMPagedMemGPUConnectorMLA(GPUConnectorInterface):
         """Expect a kwarg 'kvcaches' which is a nested tuple of K and V tensors.
         The kvcaches should correspond to the "WHOLE token sequence".
 
-        Will set the memory_obj.metadata.fmt to MemoryFormat.KV_BLOB.
+        Will set the memory_obj.metadata.fmt to MemoryFormat.KV_2LTD.
 
         Note: 
           1. This function expects the 'slot_mapping' is a "full slot mapping"
@@ -817,7 +819,7 @@ class VLLMPagedMemGPUConnectorMLA(GPUConnectorInterface):
             memory_obj.tensor.copy_(tmp_gpu_buffer, non_blocking=True)
 
         torch.cuda.synchronize()
-        memory_obj.metadata.fmt = MemoryFormat.KV_BLOB
+        memory_obj.metadata.fmt = MemoryFormat.KV_2LTD
 
     def get_shape(self, num_tokens: int) -> torch.Size:
         return torch.Size(
