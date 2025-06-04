@@ -66,7 +66,7 @@ class LMCServerConnector(RemoteConnector):
         # TODO(Jiayi): Format will be used once we support
         # compressed memory format
         memory_obj = TensorMemoryObj(
-            torch.empty(meta.shape, dtype=meta.dtype, device='cpu'),
+            torch.empty(meta.shape, dtype=meta.dtype, device="cpu"),
             metadata=meta,
         )
         if memory_obj is None:
