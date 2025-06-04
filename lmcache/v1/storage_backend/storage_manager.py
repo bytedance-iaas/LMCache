@@ -202,12 +202,17 @@ class StorageManager:
         # Search all backends for blocking get
         for backend_name, backend in self.storage_backends.items():
             # NOTE(Jiayi): bypass the allocator for now
-            memory_obj = backend.get_blocking(key)
-            if memory_obj is not None:
-                if backend_name != "LocalCPUBackend":
-                    local_cpu_backend = self.storage_backends["LocalCPUBackend"]
-                    assert isinstance(local_cpu_backend, LocalCPUBackend)
-                    local_cpu_backend.write_back(key, memory_obj)
+            tmp_memory_obj = backend.get_blocking(key)
+            if tmp_memory_obj is not None:
+                memory_obj = self.allocate(tmp_memory_obj.get_shape(),
+                                           tmp_memory_obj.get_dtype())
+                if memory_obj is None:
+                    logger.warning("Memory allocation failed in get_blocking")
+                    return None
+                memory_obj.tensor.copy_(tmp_memory_obj.tensor)
+                memory_obj.metadata.fmt = tmp_memory_obj.metadata.fmt
+                self.local_cpu_backend.write_back(key, memory_obj)
+                del tmp_memory_obj
                 return memory_obj
 
         return None

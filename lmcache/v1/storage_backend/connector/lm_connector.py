@@ -23,7 +23,7 @@ import torch
 # First Party
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey, _lmcache_nvtx_annotate
-from lmcache.v1.memory_management import MemoryFormat, MemoryObj
+from lmcache.v1.memory_management import MemoryFormat, MemoryObj, TensorMemoryObj
 from lmcache.v1.protocol import ClientMetaMessage, Constants, ServerMetaMessage
 from lmcache.v1.storage_backend.connector.base_connector import RemoteConnector
 from lmcache.v1.storage_backend.local_cpu_backend import LocalCPUBackend
@@ -65,10 +65,9 @@ class LMCServerConnector(RemoteConnector):
 
         # TODO(Jiayi): Format will be used once we support
         # compressed memory format
-        memory_obj = self.local_cpu_backend.allocate(
-            meta.shape,
-            meta.dtype,
-            meta.fmt,
+        memory_obj = TensorMemoryObj(
+            torch.empty(meta.shape, dtype=meta.dtype, device='cpu'),
+            metadata=meta,
         )
         if memory_obj is None:
             logger.warning("Failed to allocate memory during remote receive")

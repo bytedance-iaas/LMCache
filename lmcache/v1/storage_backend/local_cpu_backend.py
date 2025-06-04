@@ -286,6 +286,7 @@ class LocalCPUBackend(StorageBackendInterface):
             if self.use_hot and key not in self.hot_cache:
                 self.hot_cache[key] = memory_obj
                 memory_obj.ref_count_up()
+                self.hot_cache.move_to_end(key)
                 self.cpu_lock.release()
 
                 # Push kv msg
